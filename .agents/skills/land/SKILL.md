@@ -1,7 +1,7 @@
 ---
 name: land
 description: >-
-  Prepare and publish a zview-ui pull request, monitor its checks, and verify
+  Prepare and publish a zview-gui pull request, monitor its checks, and verify
   completion after the user merges it on GitHub. Invoke only when the user
   explicitly requests landing or invokes /land, not for review, preparation,
   passing checks, or skill installation.
@@ -10,7 +10,7 @@ metadata:
   delta-action: land
 ---
 
-# Land zview-ui changes through a pull request
+# Land zview-gui changes through a pull request
 
 ## Contract
 
@@ -25,8 +25,8 @@ Publishing a branch, opening a PR, or obtaining green checks is not completion.
 Finish successfully only after verifying that GitHub reports the PR as merged
 and that its resulting commit is included in the intended destination.
 
-Apply this workflow only to zview-ui. The expected repository is
-`zano-systems/zview-ui`, with `main` as the destination. Verify those facts each
+Apply this workflow only to zview-gui. The expected repository is
+`zano-systems/zview-gui`, with `main` as the destination. Verify those facts each
 time rather than applying them to another repository.
 
 ## 1. Inspect the change and destination
@@ -124,7 +124,7 @@ to make a submission proceed.
 - Push the dedicated branch normally, with its upstream set to the verified
   publication remote. Do not push to `main`.
 - Open the PR explicitly against the verified base and head using
-  `gh pr create --repo zano-systems/zview-ui --base main --head <branch>
+  `gh pr create --repo zano-systems/zview-gui --base main --head <branch>
   --title <title> --body-file <file>`. Replace placeholders with actual values.
   Use a temporary local body file, not an interactive editor. Do not use
   `--dry-run` as a safety mechanism; it may still push.
@@ -136,13 +136,13 @@ to make a submission proceed.
 
 ## 5. Monitor the latest revision and handle failures
 
-Use `gh pr view <number> --repo zano-systems/zview-ui --json
+Use `gh pr view <number> --repo zano-systems/zview-gui --json
 url,state,headRefOid,baseRefName,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup`
 to establish the current revision and state. Use `gh pr checks <number>
---repo zano-systems/zview-ui` to inspect checks; `--required` alone can be empty
+--repo zano-systems/zview-gui` to inspect checks; `--required` alone can be empty
 even when the project's CI must still pass.
 
-Monitor with `gh pr checks <number> --repo zano-systems/zview-ui --watch
+Monitor with `gh pr checks <number> --repo zano-systems/zview-gui --watch
 --fail-fast --interval 20` only in a bounded terminal execution. When the
 execution bound expires, report pending status and resume on a later turn.
 Do not start an unattended infinite watcher or imply monitoring continues while
@@ -158,7 +158,7 @@ are not green. Inspect the actual workflow run when a check rollup is unclear.
 On failure:
 
 - Obtain relevant diagnostics with `gh run view <run-id>
-  --repo zano-systems/zview-ui --log-failed`, targeting the actual failing run.
+  --repo zano-systems/zview-gui --log-failed`, targeting the actual failing run.
 - Report the PR, head SHA, failing job and step, useful log excerpt, and known
   reproduction command. Distinguish code failures from infrastructure failures.
 - Pause for corrections and another review; do not bypass failures, invent a
@@ -185,7 +185,7 @@ review requirements are satisfied, and GitHub reports the PR is mergeable:
 3. Report **awaiting user merge**, not success. Do not run a merge command.
 
 When the user reports merging, or a subsequent state check detects it, query
-`gh pr view <number> --repo zano-systems/zview-ui --json
+`gh pr view <number> --repo zano-systems/zview-gui --json
 state,mergedAt,mergeCommit,baseRefName,headRefOid,url`. Verify `state` is
 `MERGED`, the base is correct, and the resulting commit is reachable from
 the remote destination, using a fresh fetch and Git ancestry verification.
