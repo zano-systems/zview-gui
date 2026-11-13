@@ -2,7 +2,6 @@
 
 import contextlib
 import importlib.metadata
-import json
 import queue
 import threading
 import unittest
@@ -15,6 +14,7 @@ from zview.frames import Fatal, Frame, Notice, ReplayEnd
 from zview.target import Target
 
 from session import read_replay
+from west_launch import zview_pin
 
 ROOT = Path(__file__).resolve().parent.parent
 RECORDING = ROOT / "test-data/tests/fixtures/recordings/sys_heap_v4.3.ndjson.gz"
@@ -38,16 +38,9 @@ class LateEvents(queue.Queue):
 
 class ReplayLifecycleTests(unittest.TestCase):
     def test_installed_backend_matches_the_exact_web_requirement(self):
-        requirement = next(
-            line for line in (ROOT / "web-ui/requirements.txt").read_text().splitlines()
-            if line.startswith("zview @ ")
-        )
-        expected = requirement.rsplit("@", 1)[1].strip()
-        source = importlib.metadata.distribution("zview").read_text("direct_url.json")
-        actual = json.loads(source or "{}").get("vcs_info", {}).get("commit_id")
         self.assertEqual(
-            actual, expected,
-            "Reinstall the web backend with --force-reinstall --no-deps -r web-ui/requirements.txt",
+            importlib.metadata.version("zview"), zview_pin(),
+            "Reinstall the web backend with -r web-ui/requirements.txt",
         )
 
     def run_reader(self, pending, emit):

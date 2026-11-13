@@ -1,10 +1,10 @@
-# ZView UI
+# ZView GUI
 
 An experimental native and browser application for exploring Zephyr RTOS thread
 activity, kernel objects, and memory usage, built in Rust with
 [GPUI Kit](https://gpui-kit.com/).
 
-ZView UI is a companion frontend to [ZView](https://github.com/rodrigopex/zview),
+ZView GUI is a companion frontend to [ZView](https://github.com/rodrigopex/zview),
 which provides data acquisition and decoding. Viewing exported JSON does not
 require ZView's Python backend; native recording import and the web session adapter do.
 
@@ -83,6 +83,72 @@ just web-ui ""
 
 Bare `cargo run` also uses the small sample. Native typography is unchanged;
 the browser bundles IBM Plex Sans and JetBrains Mono.
+
+## West integration (`west zview-gui`)
+
+In a Zephyr workspace, ZView GUI is a west module whose `west zview-gui` command
+builds the browser UI, starts the [Python session adapter](web-ui/README.md),
+connects Live to the target described by the build directory, and opens the
+browser. Add both projects to your manifest. ZView must be at the release the
+adapter is pinned to (`zview==0.28.1` in `web-ui/requirements.txt`):
+
+```yaml
+manifest:
+  remotes:
+    - name: wkhadgar
+      url-base: https://github.com/wkhadgar
+    - name: zano-systems
+      url-base: https://github.com/zano-systems
+  projects:
+    - name: zview
+      remote: wkhadgar
+      revision: v0.28.1
+      path: modules/tools/zview
+      west-commands: scripts/west-commands.yml
+    - name: zview-gui
+      remote: zano-systems
+      revision: main
+      path: modules/tools/zview-gui
+      west-commands: scripts/west-commands.yml
+```
+
+One-time setup: install the Python dependencies of both modules (ZView's and
+`aiohttp`), and then the WASM tools inside the module checkout:
+
+```sh
+west update zview zview-gui
+west packages pip --install
+(cd modules/tools/zview-gui && just web-setup)
+```
+
+Build with the ZView snippet and launch:
+
+```sh
+west build -b <board> app -S zview
+west zview-gui                  # build dir from build.dir-fmt, cwd, or ./build
+west zview-gui -d other-build --no-open --port 0
+west zview-gui -r gdb -t 127.0.0.1:1234   # e.g. QEMU's gdbstub (no runners.yaml)
+```
+
+The command uses the manifest's `zview` checkout, falling back to an installed
+`zview` package. It warns if that ZView's version differs from the adapter's pin.
+Runner, target and probe clock come from the build's `runners.yaml`
+(`debug-runner` before `flash-runner`). Override them with `-r/-t/--frequency`,
+the ELF with `-e`, or the sysbuild image with `--domain`. The adapter may only
+read paths under its data root. That root is the west workspace when it holds
+the build and the application sources, otherwise their nearest common directory;
+`--data-root` overrides it. If auto-connect fails, the error is printed and the
+server keeps running so you can fix the settings in **Configure…**. Each run
+rebuilds the WASM site incrementally; `--no-build` serves the existing one.
+It listens on `127.0.0.1:8765`, or on a free port (printed) when 8765 is taken;
+an explicit `--port` that is taken is an error.
+**Ctrl+C** disconnects the probe and stops the server.
+Heap fragmentation maps are captured only while a heap's details are open; by
+default they follow the polling period (`--period`, 0.1 s) with no cooldown, so
+the fragmentation ratio updates as often as the heap statistics. Each map walks
+every heap chunk over the probe, so it lowers the overall frame rate while that
+view is open; `--heap-period`/`--heap-cooldown` throttle it. ZView's warnings,
+such as resynced broken frames, go to its log file (printed at startup).
 
 ### Browser behavior and static hosting
 

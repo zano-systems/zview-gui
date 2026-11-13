@@ -1,6 +1,6 @@
 # Contributing
 
-ZView UI is experimental and under construction. The project is not open for
+ZView GUI is experimental and under construction. The project is not open for
 contributions at this stage. The conventions below are retained for maintainers.
 
 ## Versions

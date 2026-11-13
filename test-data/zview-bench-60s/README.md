@@ -8,7 +8,7 @@ dynamic mode, not synthetic readings. Captured on 2026-10-19.
 `session-with-heap-maps.json` is the official full-data fixture for native and
 browser UI testing. It is already decoded, includes all object groups and
 captured heap chunk maps, and needs no Python backend to open.
-From the zview-ui repository root, both recipes default to this file:
+From the zview-gui repository root, both recipes default to this file:
 
 ```sh
 just ui

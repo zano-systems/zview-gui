@@ -10,9 +10,9 @@ does not drive the TUI or implement another ELF/memory-read decoder.
 
 This branch is based on remote `main` at
 `803bff9cea26a5739f39c8d424c1d8a36baf90ef`, which already included the shared
-browser frontend. The Python package is pinned independently to upstream PR #110's
-merged commit `cfc6d6d383ff4fbe04ec35f7a8d84ed99d5b71ac` (ZView 0.28.1),
-not a moving branch or an earlier PR revision.
+browser frontend. The Python package is pinned to the ZView 0.28.1 release on
+PyPI (`zview==0.28.1`, tag `v0.28.1`, upstream PR #110's merged commit
+`cfc6d6d383ff4fbe04ec35f7a8d84ed99d5b71ac`).
 
 ## Run
 
@@ -26,6 +26,13 @@ python3.12 -m venv .venv-web
 .venv-web/bin/python -m pip install -r web-ui/requirements.txt
 .venv-web/bin/python web-ui/server.py
 ```
+
+From a Zephyr west workspace, `west zview-gui` does all of this for the current
+build directory and connects Live automatically; see the main README's
+[West integration](../README.md#west-integration-west-zview-gui). The server
+offers the same startup connection directly with `--live-build-dir DIR` (plus
+`--domain/--elf/--runner/--target/--frequency`) and `--open`; `--port 0` picks a
+free port.
 
 The first setup installs nightly Rust, the WASM target and wasm-bindgen under
 `target/tools`. Builds download pinned fonts. No Node/npm or probe is needed for Replay.
@@ -41,10 +48,9 @@ requirements normally, explicitly reinstall the direct pins and check dependenci
 .venv-web/bin/python -m pip check
 ```
 
-The replay lifecycle tests verify the installed package's `direct_url.json`
-commit against `requirements.txt`, not just its unchanged `0.28.1` version.
-CI reinstalls the exact direct pins too. Keep the desktop exporter environment
-separate: its older backend pin is intentional.
+The replay lifecycle tests verify that the installed ZView version matches
+`requirements.txt`. Keep the desktop exporter environment separate: its older
+backend pin is intentional.
 
 Open **http://127.0.0.1:8765** in a WebGPU/WebGL2-capable browser with a viewport
 of at least **1000 × 680**. Select **Configure…** in the **top-right session header**
