@@ -91,15 +91,25 @@ starts the [Python session adapter](web-ui/README.md), connects Live to the
 target described by the build directory, and opens the browser. The adapter
 and the prebuilt browser UI ship together as the
 [`zview-gui` package on PyPI](https://pypi.org/project/zview-gui/), which pins
-the ZView release it is tested with (`zview==0.28.1`). Add the module to your
-manifest:
+the ZView release it is tested with (`zview==0.28.1`). The firmware side still
+needs ZView's own west module: it provides the `zview` snippet that configures
+the build (`-S zview`) and the `west zview` command. Keep it at the same
+release; the adapter's Python code always comes from the PyPI pin, not from
+this checkout. Add both modules to your manifest:
 
 ```yaml
 manifest:
   remotes:
+    - name: wkhadgar
+      url-base: https://github.com/wkhadgar
     - name: zano-systems
       url-base: https://github.com/zano-systems
   projects:
+    - name: zview
+      remote: wkhadgar
+      revision: v0.28.1  # the release zview-gui pins
+      path: modules/tools/zview
+      west-commands: scripts/west-commands.yml
     - name: zview-gui
       remote: zano-systems
       revision: main
@@ -111,7 +121,7 @@ One-time setup, and again after `west update` moves the module to a new
 release:
 
 ```sh
-west update zview-gui
+west update zview zview-gui
 west packages pip --install   # installs zview-gui==<module version> and ZView
 ```
 
