@@ -148,13 +148,10 @@ class ServeTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaisesRegex(OSError, f"Cannot listen on 127.0.0.1:{busy}"):
                     await server.serve(self.root, port=busy, stop=asyncio.Event())
 
-    async def test_warns_when_another_session_polls_the_same_probe(self):
-        snapshot = {"type": "snapshot", "data": {
-            "source": {"mode": "live"}, "status": "reading",
-            "context": {"runner": "pyocd", "target": "nrf5340_xxaa", "board": "other-board"},
-        }}
+    async def serve_beside(self, payload):
+        """Serve Live while another service holding DEFAULT_PORT answers ``payload``."""
         other = web.Application()
-        other.router.add_get("/api/session", lambda _: web.json_response(snapshot))
+        other.router.add_get("/api/session", lambda _: web.json_response(payload))
         runner = web.AppRunner(other)
         await runner.setup()
         site = web.TCPSite(runner, "127.0.0.1", 0)
@@ -168,13 +165,26 @@ class ServeTests(unittest.IsolatedAsyncioTestCase):
                 task = asyncio.create_task(server.serve(
                     self.root, live={"build_dir": "build", "runner": "pyocd"},
                     ready=ready.set_result, stop=stop, console=Console(out, color=False)))
-                await asyncio.wait_for(ready, 10)
+                url = await asyncio.wait_for(ready, 10)
                 stop.set()
                 await asyncio.wait_for(task, 10)
         finally:
             await runner.cleanup()
+        return busy, url, out.getvalue()
+
+    async def test_warns_when_another_session_polls_the_same_probe(self):
+        busy, _, out = await self.serve_beside({"type": "snapshot", "data": {
+            "source": {"mode": "live"}, "status": "reading",
+            "context": {"runner": "pyocd", "target": "nrf5340_xxaa", "board": "other-board"},
+        }})
         self.assertIn(f"another ZView GUI session (http://127.0.0.1:{busy}/) is already "
-                      "reading other-board via pyocd", out.getvalue())
+                      "reading other-board via pyocd", out)
+
+    async def test_another_service_on_the_port_is_not_mistaken_for_a_session(self):
+        busy, url, out = await self.serve_beside(["not", "a", "session"])
+        self.assertNotIn(f":{busy}/", url)
+        self.assertIn("using a free port", out)
+        self.assertNotIn("another ZView GUI session", out)
 
     async def test_without_live_nothing_connects(self):
         start_live = AsyncMock()
@@ -201,6 +211,17 @@ class SharedProbeTests(unittest.TestCase):
             {"type": "snapshot", "data": None}, None,
         ):
             self.assertIsNone(server.shared_probe(snapshot, self.CONTEXT), snapshot)
+
+    def test_other_services_json_is_not_a_session(self):
+        for snapshot in (
+            [], ["live"], "reading", 42, {"data": []}, {"data": "x"},
+            {"data": {"source": "live", "status": "reading"}},
+            {"data": {"source": {"mode": "live"}, "status": ["reading"], "context": self.CONTEXT}},
+            {"data": {"source": {"mode": "live"}, "status": "reading", "context": [1]}},
+        ):
+            self.assertIsNone(server.shared_probe(snapshot, self.CONTEXT), snapshot)
+        odd_board = self.snapshot(board=["nrf52833dk"])
+        self.assertEqual(server.shared_probe(odd_board, self.CONTEXT), "the same target")
 
 
 if __name__ == "__main__":
