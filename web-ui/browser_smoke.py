@@ -513,12 +513,12 @@ async def check_live(page, live, screenshot, sockets, dialogs):
         await wait_state(page, lambda s: s["usage_window"] == 17, "direct integer CPU window")
         await page.wait_for_timeout(150)
         await page.keyboard.press("ArrowUp")
-        await wait_state(page, lambda s: s["usage_window"] == 18, "CPU number-input keyboard increment")
+        await wait_state(page, lambda s: s["usage_window"] == 32, "CPU number-input keyboard step up")
         await page.wait_for_timeout(150)
         await page.keyboard.press("ArrowDown")
-        await wait_state(page, lambda s: s["usage_window"] == 17, "CPU number-input keyboard decrement")
+        await wait_state(page, lambda s: s["usage_window"] == 16, "CPU number-input keyboard step down")
         bounds = (await state(page))["usage_input_bounds"]
-        for x, expected in ((bounds["x"] + bounds["width"] + 12, 18), (bounds["x"] - 12, 17)):
+        for x, expected in ((bounds["x"] + bounds["width"] + 12, 32), (bounds["x"] - 12, 16)):
             await page.wait_for_timeout(150)
             await page.mouse.click(x, bounds["y"] + bounds["height"] / 2)
             await wait_state(page, lambda s: s["usage_window"] == expected, "number-input step button")
