@@ -14,8 +14,8 @@ from zview.runner_config import BuildDirError
 from zview.target import Target
 
 from build_context import resolve_build
-from heap_capture import HeapCaptureBusy
 from console import Console
+from heap_capture import HeapCaptureBusy
 from native_dialog import NativeDialogBusy, NativeDialogs, initial_directory, validate_selection
 from paths import INPUT_LIMIT, input_path
 from session import SessionBusy, SessionController
