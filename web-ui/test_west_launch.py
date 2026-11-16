@@ -12,7 +12,7 @@ from urllib.request import urlopen
 import server
 from session import SessionController
 from test_build_context import make_build
-from west_launch import data_root_for, heap_period, live_request, zview_pin
+from west_launch import data_root_for, heap_period, live_request, site_ready, zview_pin
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -32,6 +32,15 @@ class HelperTests(unittest.TestCase):
         bad.write_text("aiohttp==1\nzview @ git+https://example.invalid/zview.git@abc1234\n")
         with self.assertRaises(ValueError):
             zview_pin(bad)
+
+    def test_site_needs_page_and_wasm(self):
+        site = self.top / "web"
+        self.assertFalse(site_ready(site))
+        (site / "pkg").mkdir(parents=True)
+        (site / "index.html").write_text("<html></html>")
+        self.assertFalse(site_ready(site))
+        (site / "pkg" / "zview_desktop_bg.wasm").write_bytes(b"\0asm")
+        self.assertTrue(site_ready(site))
 
     def test_heap_maps_follow_polling_unless_set(self):
         self.assertEqual(heap_period(0.1, None), 0.1)

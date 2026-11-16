@@ -22,8 +22,10 @@ Auto-detected when omitted:
   -t/--runner-target  from the build directory's runners.yaml
   --data-root         the west workspace, if it holds the build and its sources
 
-One-time setup: `west packages pip --install`, then `just web-setup`
-in the zview-gui module directory (nightly Rust + wasm-bindgen).
+It serves the browser site already in the module (target/web) and never
+compiles unless --rebuild is given. One-time setup: `west packages pip
+--install`. Rebuilding also needs `just web-setup` in the zview-gui module
+directory (nightly Rust + wasm-bindgen).
 """
 
 
@@ -61,8 +63,9 @@ class ZViewGuiCommand(WestCommand):
                             help="Local port; 0 picks a free one (default: 8765, "
                                  "or a free port when 8765 is taken).")
         parser.add_argument("--data-root", help="Trusted directory the UI may read paths from.")
-        parser.add_argument("--no-build", action="store_true",
-                            help="Serve the existing WASM site without rebuilding it.")
+        parser.add_argument("--rebuild", action="store_true",
+                            help="Rebuild the WASM site from source before serving it "
+                                 "(needs `just web-setup`).")
         parser.add_argument("--no-open", action="store_true",
                             help="Do not open the browser.")
         return parser
@@ -97,8 +100,11 @@ class ZViewGuiCommand(WestCommand):
         self.inf(f"Build directory: {build_dir}")
         self.inf(f"Data root: {root}")
 
-        if not args.no_build:
+        if args.rebuild:
             self._build_site()
+        elif not west_launch.site_ready(west_launch.SITE):
+            self.die(f"No browser site in {west_launch.SITE}. Build it once with "
+                     f"`west zview-gui --rebuild`, after `just web-setup` in {ROOT}.")
 
         import server
 

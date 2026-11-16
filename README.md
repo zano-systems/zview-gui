@@ -113,12 +113,20 @@ manifest:
 ```
 
 One-time setup: install the Python dependencies of both modules (ZView's and
-`aiohttp`), and then the WASM tools inside the module checkout:
+`aiohttp`):
 
 ```sh
 west update zview zview-gui
 west packages pip --install
+```
+
+`west zview-gui` serves the browser site in the module's `target/web` and never
+compiles by default. Until prebuilt releases are published, build that site
+once with the WASM tools inside the module checkout:
+
+```sh
 (cd modules/tools/zview-gui && just web-setup)
+west zview-gui --rebuild
 ```
 
 Build with the ZView snippet and launch:
@@ -138,8 +146,8 @@ the ELF with `-e`, or the sysbuild image with `--domain`. The adapter may only
 read paths under its data root. That root is the west workspace when it holds
 the build and the application sources, otherwise their nearest common directory;
 `--data-root` overrides it. If auto-connect fails, the error is printed and the
-server keeps running so you can fix the settings in **Configure…**. Each run
-rebuilds the WASM site incrementally; `--no-build` serves the existing one.
+server keeps running so you can fix the settings in **Configure…**. `--rebuild`
+recompiles the WASM site incrementally before serving it.
 It listens on `127.0.0.1:8765`, or on a free port (printed) when 8765 is taken;
 an explicit `--port` that is taken is an error.
 **Ctrl+C** disconnects the probe and stops the server.
