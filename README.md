@@ -87,24 +87,19 @@ the browser bundles IBM Plex Sans and JetBrains Mono.
 ## West integration (`west zview-gui`)
 
 In a Zephyr workspace, ZView GUI is a west module whose `west zview-gui` command
-builds the browser UI, starts the [Python session adapter](web-ui/README.md),
-connects Live to the target described by the build directory, and opens the
-browser. Add both projects to your manifest. ZView must be at the release the
-adapter is pinned to (`zview==0.28.1` in `web-ui/requirements.txt`):
+starts the [Python session adapter](web-ui/README.md), connects Live to the
+target described by the build directory, and opens the browser. The adapter
+and the prebuilt browser UI ship together as the
+[`zview-gui` package on PyPI](https://pypi.org/project/zview-gui/), which pins
+the ZView release it is tested with (`zview==0.28.1`). Add the module to your
+manifest:
 
 ```yaml
 manifest:
   remotes:
-    - name: wkhadgar
-      url-base: https://github.com/wkhadgar
     - name: zano-systems
       url-base: https://github.com/zano-systems
   projects:
-    - name: zview
-      remote: wkhadgar
-      revision: v0.28.1
-      path: modules/tools/zview
-      west-commands: scripts/west-commands.yml
     - name: zview-gui
       remote: zano-systems
       revision: main
@@ -112,17 +107,18 @@ manifest:
       west-commands: scripts/west-commands.yml
 ```
 
-One-time setup: install the Python dependencies of both modules (ZView's and
-`aiohttp`):
+One-time setup, and again after `west update` moves the module to a new
+release:
 
 ```sh
-west update zview zview-gui
-west packages pip --install
+west update zview-gui
+west packages pip --install   # installs zview-gui==<module version> and ZView
 ```
 
-`west zview-gui` serves the browser site in the module's `target/web` and never
-compiles by default. Until prebuilt releases are published, build that site
-once with the WASM tools inside the module checkout:
+No Rust or WASM toolchain is needed. `west zview-gui` runs the installed
+package and warns when it is not the release the module revision expects.
+Contributors who change the UI build the site from the module's sources
+instead, with the WASM tools installed once:
 
 ```sh
 (cd modules/tools/zview-gui && just web-setup)
@@ -138,8 +134,6 @@ west zview-gui -d other-build --no-open --port 0
 west zview-gui -r gdb -t 127.0.0.1:1234   # e.g. QEMU's gdbstub (no runners.yaml)
 ```
 
-The command uses the manifest's `zview` checkout, falling back to an installed
-`zview` package. It warns if that ZView's version differs from the adapter's pin.
 Runner, target and probe clock come from the build's `runners.yaml`
 (`debug-runner` before `flash-runner`). Override them with `-r/-t/--frequency`,
 the ELF with `-e`, or the sysbuild image with `--domain`. The adapter may only
@@ -147,7 +141,8 @@ read paths under its data root. That root is the west workspace when it holds
 the build and the application sources, otherwise their nearest common directory;
 `--data-root` overrides it. If auto-connect fails, the error is printed and the
 server keeps running so you can fix the settings in **Configure…**. `--rebuild`
-recompiles the WASM site incrementally before serving it.
+recompiles the WASM site incrementally into the module's `target/web` and serves
+that instead of the packaged site.
 It listens on `127.0.0.1:8765`, or on a free port (printed) when 8765 is taken;
 an explicit `--port` that is taken is an error.
 **Ctrl+C** disconnects the probe and stops the server.
@@ -160,6 +155,16 @@ the fragmentation ratio updates as often as the heap statistics. Each map walks
 every heap chunk over the probe, so it lowers the overall frame rate while that
 view is open; `--heap-period`/`--heap-cooldown` throttle it. ZView's warnings,
 such as resynced broken frames, go to its log file (printed at startup).
+
+Outside west, the same package provides a `zview-gui` command with the same
+options. It takes the build directory explicitly, and without `-d` it serves
+Replay only, from `--data-root`:
+
+```sh
+pip install zview-gui
+zview-gui -d path/to/build
+zview-gui --data-root path/to/recordings
+```
 
 ### Browser behavior and static hosting
 
