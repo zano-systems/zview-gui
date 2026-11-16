@@ -29,7 +29,8 @@ def data_root_for(build_dir, topdir=None, extra=()):
     """
     The narrowest trusted root holding the build, its sources and ``extra`` paths.
     The west workspace is preferred when it holds them all. When their only common
-    ancestor is the filesystem root, only the build directory (and ``extra``) is used.
+    ancestor is the filesystem root, or they are on different Windows drives, only the
+    build directory (and ``extra``) is used.
     """
     build = Path(build_dir).resolve()
     required = [build, *(Path(p).resolve() for p in extra)]
@@ -40,7 +41,10 @@ def data_root_for(build_dir, topdir=None, extra=()):
         if all(p.is_relative_to(top) for p in wanted):
             return top
     for paths in (wanted, required):
-        common = Path(os.path.commonpath([str(p) for p in paths]))
+        try:
+            common = Path(os.path.commonpath([str(p) for p in paths]))
+        except ValueError:  # on different Windows drives: try the required inputs alone
+            continue
         if common != Path(common.anchor):
             return common if common.is_dir() else common.parent
     raise ValueError("The build and its inputs share no directory but the filesystem root.")
