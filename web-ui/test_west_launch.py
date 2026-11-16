@@ -3,6 +3,7 @@
 import asyncio
 import io
 import json
+import os
 import socket
 import tempfile
 import unittest
@@ -70,6 +71,33 @@ class HelperTests(unittest.TestCase):
     def test_unrelated_sources_fall_back_to_the_build_only(self):
         (self.build / "CMakeCache.txt").write_text("APPLICATION_SOURCE_DIR:PATH=/\n")
         self.assertEqual(data_root_for(self.build, self.top / "missing"), self.build)
+
+    def cross_drive(self, *other_drive):
+        """``os.path.commonpath`` as on Windows when ``other_drive`` paths are on D:."""
+        real = os.path.commonpath
+        others = {str(path) for path in other_drive}
+
+        def commonpath(paths):
+            if others & set(paths) and set(paths) - others:
+                raise ValueError("Paths don't have the same drive")
+            return real(paths)
+
+        return patch("zview_gui.launch.os.path.commonpath", commonpath)
+
+    def test_sources_on_another_drive_fall_back_to_the_build(self):
+        source = self.top / "src"
+        source.mkdir()
+        (self.build / "CMakeCache.txt").write_text(f"APPLICATION_SOURCE_DIR:PATH={source}\n")
+        with self.cross_drive(source):
+            self.assertEqual(data_root_for(self.build), self.build)
+            self.assertEqual(data_root_for(self.build, self.top / "missing"), self.build)
+
+    def test_a_required_elf_on_another_drive_is_still_an_error(self):
+        elf = self.top / "elsewhere" / "app.elf"
+        elf.parent.mkdir()
+        elf.write_bytes(b"")
+        with self.cross_drive(elf), self.assertRaisesRegex(ValueError, "share no directory"):
+            data_root_for(self.build, None, [elf])
 
     def test_extra_paths_widen_the_root(self):
         elf = self.top / "elsewhere" / "app.elf"
