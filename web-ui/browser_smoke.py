@@ -559,7 +559,7 @@ async def check_live(page, live, screenshot, sockets, dialogs):
         await page.keyboard.press("Escape")
         await wait_state(page, lambda s: not s["dialog_open"], "kernel configuration dismissal")
         await page.mouse.click(100, 147)
-        returned = await wait_state(page, lambda s: s["screen"] == "Overview" and not s["view_loading"], "return to Threads")
+        returned = await wait_state(page, lambda s: s["screen"] == "Overview" and not s["view_loading"], "return to Overview")
         assert returned["history_origin"] > full["history_origin"], returned
         assert returned["history_seconds"] < 1, returned
         before_warning = await state(page)

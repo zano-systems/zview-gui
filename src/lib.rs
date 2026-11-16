@@ -92,7 +92,7 @@ fn help_text(browser: bool) -> String {
         "{source_help}{}",
         concat!(
             "Click a thread row to open details. Focus the thread table and use Up/Down then Enter. ",
-            "Escape or Back to Threads returns without changing session time. CPU excludes idle. ",
+            "Escape or Back to Overview returns without changing session time. CPU excludes idle. ",
             "Stack watermark is not total device RAM. Options are raw target flags. ",
             "Expand Kernel objects in the sidebar to filter by type; search filters by name/address. ",
             "Click a kernel-object row, or focus it with Tab and press Enter, for details. ",
@@ -774,7 +774,7 @@ impl ThreadsApp {
             .child("›")
             .when(!section_link, |el| {
                 el.child(if in_threads {
-                    "Threads"
+                    "Overview"
                 } else {
                     "Kernel objects"
                 })
@@ -791,7 +791,7 @@ impl ThreadsApp {
                             .text()
                             .small()
                             .label(if in_threads {
-                                "Threads"
+                                "Overview"
                             } else {
                                 "Kernel objects"
                             })
@@ -955,7 +955,7 @@ impl ThreadsApp {
                 SidebarGroup::new("Monitor").child(
                     SidebarMenu::new()
                         .child(
-                            SidebarMenuItem::new("Threads")
+                            SidebarMenuItem::new("Overview")
                                 .icon(Icon::new(assets::IconName::Spool))
                                 .active(!in_objects)
                                 .on_click(cx.listener(|this, _, window, cx| {
@@ -1451,7 +1451,7 @@ impl Render for ThreadsApp {
                                 .flex_shrink_0()
                                 .items_center().justify_between()
                                 .child(div().flex().flex_col().gap_1()
-                                .child(div().text_2xl().font_semibold().child("Threads"))
+                                .child(div().text_2xl().font_semibold().child("Overview"))
                                 .child(
                                     div()
                                         .text_sm()
