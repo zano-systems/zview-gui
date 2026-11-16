@@ -29,6 +29,37 @@ FONTS = {
 }
 
 
+# wasm-opt (Binaryen) settings for release sites. The features are the ones
+# rustc enables by default for wasm32-unknown-unknown, so the optimizer keeps
+# every instruction the compiler emitted.
+WASM_OPT_LEVEL = "-Os"  # matches the web-release profile's opt-level "s"
+WASM_OPT_FEATURES = (
+    "--enable-bulk-memory", "--enable-mutable-globals", "--enable-nontrapping-float-to-int",
+    "--enable-sign-ext", "--enable-reference-types", "--enable-multivalue",
+)
+
+
+def wasm_opt():
+    """The wasm-opt executable: $WASM_OPT, target/tools/bin, then PATH."""
+    candidates = [os.environ.get("WASM_OPT"), ROOT / "target" / "tools" / "bin" / "wasm-opt",
+                  shutil.which("wasm-opt")]
+    return next((Path(c) for c in candidates if c and Path(c).is_file()), None)
+
+
+def optimize(wasm):
+    """Shrink a release module in place with wasm-opt, if available."""
+    tool = wasm_opt()
+    if tool is None:
+        if os.environ.get("ZVIEW_REQUIRE_WASM_OPT"):
+            raise ValueError("wasm-opt is required for release sites but was not found.")
+        print("wasm-opt not found; the release site is not post-optimized.", flush=True)
+        return
+    before = wasm.stat().st_size
+    subprocess.run([str(tool), WASM_OPT_LEVEL, *WASM_OPT_FEATURES, "--strip-debug",
+                    "--strip-producers", str(wasm), "-o", str(wasm)], check=True)
+    print(f"wasm-opt {WASM_OPT_LEVEL}: {before:,} -> {wasm.stat().st_size:,} bytes", flush=True)
+
+
 def build(release=False):
     """No npm dependencies; wasm-bindgen's web output is directly browser-loadable."""
     bindgen = ROOT / "target" / "tools" / "bin" / (
@@ -43,7 +74,7 @@ def build(release=False):
     if version != f"wasm-bindgen {BINDGEN_VERSION}":
         raise ValueError(f"Need wasm-bindgen {BINDGEN_VERSION}; run `just web-setup`.")
     toolchain = os.environ.get("ZVIEW_WEB_TOOLCHAIN", "nightly")
-    profile = "release" if release else "web"
+    profile = "web-release" if release else "web"
     # GPUI's wasm_thread/parking_lot dependencies require nightly even though
     # this application uses the single-threaded WebPlatform.
     subprocess.run([
@@ -61,6 +92,8 @@ def build(release=False):
         str(bindgen), str(wasm), "--target", "web", "--no-typescript",
         "--out-dir", str(SITE / "pkg"),
     ], check=True)
+    if release:
+        optimize(SITE / "pkg" / "zview_desktop_bg.wasm")
     for name in ("index.html", "main.js", "documents.mjs"):
         shutil.copyfile(ROOT / "web" / name, SITE / name)
     fonts = SITE / "fonts"

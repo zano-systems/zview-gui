@@ -33,3 +33,14 @@ gpui = { package = "gpui-pre", version = "=0.3.9", features = ["test-support"] }
 [profile.web]
 inherits = "dev"
 debug = 0
+
+# Release browser site. Measured on the WASM module, vs. plain `release`:
+# 15.0 MB raw / 4.9 MB gzip instead of 25.0 / 7.0. That is 15% smaller than
+# opt-level 3 (5.9 MB gzip) with about 4% slower redraws. opt-level "z" saves
+# 0.6 MB more but redraws about 17% slower. The native app keeps `release`.
+[profile.web-release]
+inherits = "release"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = true
