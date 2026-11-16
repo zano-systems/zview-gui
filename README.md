@@ -151,6 +151,9 @@ recompiles the WASM site incrementally before serving it.
 It listens on `127.0.0.1:8765`, or on a free port (printed) when 8765 is taken;
 an explicit `--port` that is taken is an error.
 **Ctrl+C** disconnects the probe and stops the server.
+While it runs, the terminal reports Live status changes (reading, lost, failed,
+stopped) and read notices, coloured by level, with the page URL highlighted.
+Set `NO_COLOR=1`, or `west config color.ui false`, for plain output.
 Heap fragmentation maps are captured only while a heap's details are open; by
 default they follow the polling period (`--period`, 0.1 s) with no cooldown, so
 the fragmentation ratio updates as often as the heap statistics. Each map walks

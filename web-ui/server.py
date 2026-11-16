@@ -5,7 +5,6 @@ import asyncio
 import contextlib
 import errno
 import signal
-import sys
 import webbrowser
 from pathlib import Path
 
@@ -16,6 +15,7 @@ from zview.target import Target
 
 from build_context import resolve_build
 from heap_capture import HeapCaptureBusy
+from console import Console
 from native_dialog import NativeDialogBusy, NativeDialogs, initial_directory, validate_selection
 from paths import INPUT_LIMIT, input_path
 from session import SessionBusy, SessionController
@@ -382,7 +382,7 @@ async def start_live_session(app, live):
     return context
 
 
-async def bind(runner, host, port):
+async def bind(runner, host, port, console):
     """Bind ``port``; ``None`` means DEFAULT_PORT, or any free port when it is taken."""
     try:
         await web.TCPSite(runner, host, DEFAULT_PORT if port is None else port).start()
@@ -390,20 +390,23 @@ async def bind(runner, host, port):
         if port is not None or exc.errno != errno.EADDRINUSE:
             raise OSError(exc.errno, f"Cannot listen on {host}:{port}: {exc.strerror}. "
                           "Choose another --port, or 0 for any free port.") from None
-        print(f"ZView: port {DEFAULT_PORT} is in use; using a free port.", flush=True)
+        console.warning(f"port {DEFAULT_PORT} is in use; using a free port.")
         await web.TCPSite(runner, host, 0).start()
     return f"http://{host}:{runner.addresses[0][1]}/"
 
 
 async def serve(data_root, *, host="127.0.0.1", port=None, period=0.1, heap_period=1.,
-                heap_cooldown=1., live=None, open_browser=False, ready=None, stop=None):
+                heap_cooldown=1., live=None, open_browser=False, ready=None, stop=None,
+                console=None):
     """Serve until ``stop`` is set (or Ctrl+C), optionally auto-connecting ``live``."""
+    console = console if console is not None else Console()
     app = create_app(data_root, period=period, heap_period=heap_period,
                      heap_cooldown=heap_cooldown)
+    app[CONTROLLER].observer = console.session_event
     runner = web.AppRunner(app)
     await runner.setup()
     try:
-        url = await bind(runner, host, port)
+        url = await bind(runner, host, port, console)
     except BaseException:
         await runner.cleanup()
         raise
@@ -411,14 +414,13 @@ async def serve(data_root, *, host="127.0.0.1", port=None, period=0.1, heap_peri
         if live is not None:
             try:
                 context = await start_live_session(app, live)
-                print(f"ZView: connecting to {context.get('board') or 'board unknown'} "
-                      f"via {context['runner']} ({context['target'] or 'default target'})",
-                      flush=True)
+                console.connecting(context)
             except (SessionBusy, ValueError, OSError, RuntimeError, KeyError, TypeError,
                     BuildDirError, YAMLError) as exc:
                 # Keep serving: the session dialog can correct the configuration.
-                print(f"ZView: Live auto-connect failed: {exc}", file=sys.stderr, flush=True)
-        print(f"ZView: {url}\nCtrl+C stops the server.", flush=True)
+                console.error(f"Live auto-connect failed: {exc}")
+                console.hint("Fix the settings in Configure… in the browser.")
+        console.serving(url)
         if open_browser:
             webbrowser.open(url)
         if ready is not None:
@@ -432,7 +434,7 @@ async def serve(data_root, *, host="127.0.0.1", port=None, period=0.1, heap_peri
                     loop.add_signal_handler(signum, stop.set)
         await stop.wait()
     finally:
-        print("ZView: stopping…", flush=True)
+        console.hint("stopping…")
         await runner.cleanup()
 
 

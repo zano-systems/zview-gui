@@ -238,6 +238,8 @@ class SessionController:
                  period=POLL_PERIOD, heap_period=1., heap_cooldown=1.):
         self.session: Session | None = None
         self.sequence = 0
+        # Optional callable(kind, data), e.g. the terminal console.
+        self.observer = None
         self._reader = reader
         self._live_reader = live_reader
         self._task: asyncio.Task | None = None
@@ -435,6 +437,8 @@ class SessionController:
             if self.session.status == "stopping":
                 return
             self.session.samples_per_second = data["samples_per_second"]
+        if self.observer is not None:
+            self.observer(kind, data)
         self.sequence += 1
         self._broadcast(self._message(kind, data))
 

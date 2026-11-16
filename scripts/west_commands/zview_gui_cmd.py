@@ -78,7 +78,7 @@ class ZViewGuiCommand(WestCommand):
         # its rotating log file instead of flooding the terminal.
         from zview.logging_setup import configure as configure_logging
 
-        self.inf(f"ZView log: {configure_logging()}")
+        log = configure_logging()
         try:
             import aiohttp  # noqa: F401
         except ImportError:
@@ -86,6 +86,10 @@ class ZViewGuiCommand(WestCommand):
 
         sys.path.insert(0, str(WEB_UI))
         import west_launch
+        from console import Console, wants_color
+
+        console = Console(color=self.color_ui and wants_color(sys.stdout))
+        console.field("ZView log", log)
 
         extra = [args.elf_file] if args.elf_file else []
         try:
@@ -97,8 +101,8 @@ class ZViewGuiCommand(WestCommand):
             )
         except ValueError as error:
             self.die(f"{error} Pass --data-root containing the build and ELF.")
-        self.inf(f"Build directory: {build_dir}")
-        self.inf(f"Data root: {root}")
+        console.field("Build directory", build_dir)
+        console.field("Data root", root)
 
         if args.rebuild:
             self._build_site()
@@ -113,6 +117,7 @@ class ZViewGuiCommand(WestCommand):
                 root, port=args.port, period=args.period,
                 heap_period=west_launch.heap_period(args.period, args.heap_period),
                 heap_cooldown=args.heap_cooldown, live=live, open_browser=not args.no_open,
+                console=console,
             ))
         except KeyboardInterrupt:
             pass
