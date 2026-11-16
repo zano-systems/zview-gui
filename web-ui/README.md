@@ -16,23 +16,30 @@ PyPI (`zview==0.28.1`, tag `v0.28.1`, upstream PR #110's merged commit
 
 ## Run
 
-Use the repository's existing WASM setup/build, plus a separate Python 3.12
-environment for the adapter. From the repository root:
+The adapter is the `zview_gui` package in this directory, published with the
+prebuilt site as [`zview-gui` on PyPI](https://pypi.org/project/zview-gui/).
+To work on it, use the repository's WASM setup/build plus a separate Python
+3.12 environment with an editable install. From the repository root:
 
 ```sh
 just web-setup
 python3 scripts/web_ui.py build
 python3.12 -m venv .venv-web
 .venv-web/bin/python -m pip install -r web-ui/requirements.txt
-.venv-web/bin/python web-ui/server.py
+.venv-web/bin/python -m pip install --no-deps -e .
+.venv-web/bin/zview-gui --no-open      # or: .venv-web/bin/python -m zview_gui
 ```
 
-From a Zephyr west workspace, `west zview-gui` does all of this for the current
-build directory and connects Live automatically; see the main README's
-[West integration](../README.md#west-integration-west-zview-gui). The server
-offers the same startup connection directly with `--live-build-dir DIR` (plus
-`--domain/--elf/--runner/--target/--frequency`) and `--open`; `--port 0` picks a
-free port.
+An editable install serves the checkout's `target/web`; an installed wheel
+serves the site packaged in it, and `--site DIR` serves any other build. Without
+`-d`, the command serves Replay from `--data-root` (default: the current
+directory). `-d BUILD_DIR` connects Live at startup, with
+`-e/-r/-t/--domain/--frequency` overrides; `--port 0` picks a free port, and
+`--no-open` keeps the browser closed.
+
+From a Zephyr west workspace, `west zview-gui` runs the installed package for
+the current build directory; see the main README's
+[West integration](../README.md#west-integration-west-zview-gui).
 
 The first setup installs nightly Rust, the WASM target and wasm-bindgen under
 `target/tools`. Builds download pinned fonts. No Node/npm or probe is needed for Replay.
@@ -66,7 +73,7 @@ another active session.
 For other trusted local captures:
 
 ```sh
-.venv-web/bin/python web-ui/server.py --data-root /path/to/captures --port 8765
+.venv-web/bin/zview-gui --data-root /path/to/captures --port 8765
 ```
 
 Paths refer to files on the adapter machine, not browser-uploaded files. Relative
@@ -398,12 +405,14 @@ These adapter-level startup options apply to Live sessions, not Replay:
 For back-to-back polling with a requested maximum of 10 map updates/s:
 
 ```sh
-.venv-web/bin/python web-ui/server.py --port 8766 --data-root /path/to/project \
+.venv-web/bin/zview-gui --port 8766 -d /path/to/project/build \
   --period 0 --heap-period 0.1 --heap-cooldown 0
 ```
 
-Defaults remain `--period 0.1 --heap-period 1 --heap-cooldown 1`. Values must be
-finite; frame period/cooldown may be zero, but heap period must be positive.
+By default, maps follow the polling period with no cooldown (`--period 0.1`,
+`--heap-period` equal to `--period`, `--heap-cooldown 0`), as in `west
+zview-gui`; with `--period 0` and no `--heap-period`, maps are captured
+back-to-back too. Values must be finite; frame period/cooldown may be zero.
 Restarting the adapter applies new options; then reconnect the target. Snapshots
 report the effective `timing`, and the header tooltip/map caption show those
 requested values instead of assuming the default rates.
@@ -587,6 +596,7 @@ node --test web/documents.test.mjs
 python3 -m unittest discover -s scripts -p test_web_ui.py -v
 .venv-web/bin/python -m pip check
 .venv-web/bin/python -m unittest discover -s web-ui -p 'test_*.py' -v
+python -m build --wheel && python3 scripts/check_wheel.py contents dist/*.whl
 ```
 
 For real-browser validation:
