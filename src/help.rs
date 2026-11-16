@@ -9,11 +9,21 @@ use gpui_kit::*;
 use std::cell::Cell;
 use std::rc::Rc;
 
-/// Asset path of the single-colour mark, tinted by the element's text colour.
-pub(crate) const MARK: &str = "brand/zview-mark.svg";
-pub(crate) const MARK_SVG: &[u8] = include_bytes!("../assets/brand/zview-mark.svg");
+/// The mark's two single-colour layers (lens, pulse), each tinted by its
+/// element's text colour and stacked on a dark tile.
+pub(crate) const MARK_LAYERS: [(&str, &[u8]); 2] = [
+    (
+        "brand/zview-mark-lens.svg",
+        include_bytes!("../assets/brand/zview-mark-lens.svg"),
+    ),
+    (
+        "brand/zview-mark-pulse.svg",
+        include_bytes!("../assets/brand/zview-mark-pulse.svg"),
+    ),
+];
 const MARK_BG: u32 = 0x080808;
-const MARK_CYAN: u32 = 0x76f6f5;
+const MARK_LENS: u32 = 0xffffff;
+const MARK_PULSE: u32 = 0x00fff7;
 
 pub(crate) const ZANO_GITHUB: &str = "https://github.com/zano-systems";
 pub(crate) const ZANO_WEBSITE: &str = "https://zano.systems/";
@@ -148,22 +158,27 @@ pub(crate) fn help_text(browser: bool) -> String {
         .join(" ")
 }
 
-/// The brand mark: a cyan "z" ending in a pulse, with Zano's dot, on a dark tile.
+/// The brand mark: a lens with a runtime pulse leaving it, on a dark tile.
 pub(crate) fn mark(size: Pixels) -> Div {
+    let inner = size * 0.82;
+    let inset = (size - inner) / 2.;
+    let layer = |path: &'static str, color: u32| {
+        svg()
+            .path(path)
+            .absolute()
+            .top(inset)
+            .left(inset)
+            .size(inner)
+            .text_color(rgb(color))
+    };
     div()
         .size(size)
         .flex_shrink_0()
+        .relative()
         .rounded(size * 0.23)
         .bg(rgb(MARK_BG))
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(
-            svg()
-                .path(MARK)
-                .size(size * 0.82)
-                .text_color(rgb(MARK_CYAN)),
-        )
+        .child(layer(MARK_LAYERS[0].0, MARK_LENS))
+        .child(layer(MARK_LAYERS[1].0, MARK_PULSE))
 }
 
 fn keycap(key: &'static str) -> Div {
