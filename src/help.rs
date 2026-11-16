@@ -8,6 +8,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::{Arc, LazyLock};
 
 /// The mark's two single-colour layers (lens, pulse), each tinted by its
 /// element's text colour and stacked on a dark tile.
@@ -24,6 +25,9 @@ pub(crate) const MARK_LAYERS: [(&str, &[u8]); 2] = [
 const MARK_BG: u32 = 0x080808;
 const MARK_LENS: u32 = 0xffffff;
 const MARK_PULSE: u32 = 0x00fff7;
+
+/// Zano Systems' logo, downscaled from the brand file for the About card.
+pub(crate) const ZANO_LOGO_PNG: &[u8] = include_bytes!("../assets/brand/zano-logo.png");
 
 pub(crate) const ZANO_GITHUB: &str = "https://github.com/zano-systems";
 pub(crate) const ZANO_WEBSITE: &str = "https://zano.systems/";
@@ -179,6 +183,16 @@ pub(crate) fn mark(size: Pixels) -> Div {
         .bg(rgb(MARK_BG))
         .child(layer(MARK_LAYERS[0].0, MARK_LENS))
         .child(layer(MARK_LAYERS[1].0, MARK_PULSE))
+}
+
+/// The Zano Systems logo tile, decoded once.
+fn zano_logo(size: Pixels) -> Img {
+    static LOGO: LazyLock<Arc<Image>> =
+        LazyLock::new(|| Arc::new(Image::from_bytes(ImageFormat::Png, ZANO_LOGO_PNG.to_vec())));
+    img(LOGO.clone())
+        .size(size)
+        .flex_shrink_0()
+        .rounded(size * 0.23)
 }
 
 fn keycap(key: &'static str) -> Div {
@@ -356,12 +370,24 @@ pub(crate) fn open_about(window: &mut Window, cx: &mut App) {
                         .border_color(rgb(BORDER))
                         .bg(rgb(CARD))
                         .child(section_title("Backed by"))
-                        .child(div().font_semibold().child("Zano Systems"))
                         .child(
                             div()
-                                .text_sm()
-                                .text_color(rgb(MUTED))
-                                .child("Zephyr® expertise. Built into your product."),
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .child(zano_logo(px(48.)))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_0p5()
+                                        .child(div().font_semibold().child("Zano Systems"))
+                                        .child(
+                                            div().text_sm().text_color(rgb(MUTED)).child(
+                                                "Zephyr® expertise. Built into your product.",
+                                            ),
+                                        ),
+                                ),
                         )
                         .child(link_row(
                             "about-zano-github",
