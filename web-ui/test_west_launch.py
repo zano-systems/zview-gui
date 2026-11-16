@@ -1,6 +1,7 @@
 """`west zview-gui` helpers and the adapter's auto-connect startup path."""
 
 import asyncio
+import io
 import json
 import socket
 import tempfile
@@ -10,6 +11,8 @@ from unittest.mock import AsyncMock, patch
 from urllib.request import urlopen
 
 import server
+from aiohttp import web
+from console import Console
 from session import SessionController
 from test_build_context import make_build
 from west_launch import data_root_for, heap_period, live_request, site_ready, zview_pin
@@ -145,10 +148,59 @@ class ServeTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaisesRegex(OSError, f"Cannot listen on 127.0.0.1:{busy}"):
                     await server.serve(self.root, port=busy, stop=asyncio.Event())
 
+    async def test_warns_when_another_session_polls_the_same_probe(self):
+        snapshot = {"type": "snapshot", "data": {
+            "source": {"mode": "live"}, "status": "reading",
+            "context": {"runner": "pyocd", "target": "nrf5340_xxaa", "board": "other-board"},
+        }}
+        other = web.Application()
+        other.router.add_get("/api/session", lambda _: web.json_response(snapshot))
+        runner = web.AppRunner(other)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        busy = runner.addresses[0][1]
+        out = io.StringIO()
+        try:
+            with patch("server.DEFAULT_PORT", busy), \
+                    patch.object(SessionController, "start_live", AsyncMock()):
+                stop, ready = asyncio.Event(), asyncio.Future()
+                task = asyncio.create_task(server.serve(
+                    self.root, live={"build_dir": "build", "runner": "pyocd"},
+                    ready=ready.set_result, stop=stop, console=Console(out, color=False)))
+                await asyncio.wait_for(ready, 10)
+                stop.set()
+                await asyncio.wait_for(task, 10)
+        finally:
+            await runner.cleanup()
+        self.assertIn(f"another ZView GUI session (http://127.0.0.1:{busy}/) is already "
+                      "reading other-board via pyocd", out.getvalue())
+
     async def test_without_live_nothing_connects(self):
         start_live = AsyncMock()
         await self.run_serve(None, start_live)
         start_live.assert_not_awaited()
+
+
+class SharedProbeTests(unittest.TestCase):
+    CONTEXT = {"runner": "jlink", "target": "nRF52833_xxAA", "board": "nrf52833dk"}
+
+    def snapshot(self, mode="live", status="reading", **context):
+        return {"data": {"source": {"mode": mode}, "status": status,
+                         "context": {**self.CONTEXT, **context}}}
+
+    def test_same_runner_and_target_while_live(self):
+        self.assertEqual(server.shared_probe(self.snapshot(), self.CONTEXT), "nrf52833dk")
+        self.assertEqual(server.shared_probe(self.snapshot(status="opening"), self.CONTEXT),
+                         "nrf52833dk")
+
+    def test_other_probes_replays_and_idle_sessions_do_not_warn(self):
+        for snapshot in (
+            self.snapshot(target="nRF5340_xxAA_APP"), self.snapshot(runner="pyocd"),
+            self.snapshot(mode="replay"), self.snapshot(status="stopped"),
+            {"type": "snapshot", "data": None}, None,
+        ):
+            self.assertIsNone(server.shared_probe(snapshot, self.CONTEXT), snapshot)
 
 
 if __name__ == "__main__":
