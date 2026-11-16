@@ -30,12 +30,12 @@ impl ThreadsApp {
                     .child(div().flex().items_center().gap_2()
                         .children(self.cpu_averaging_controls(cx))
                         .child(div().debug_selector(|| "back-to-threads".into())
-                        .child(Button::new("back-to-threads").label("Back to Threads")
+                        .child(Button::new("back-to-threads").label("Back to Overview")
                             .on_click(cx.listener(|this, _, window, cx| this.show_overview(window, cx)))))),
             )
             .when(thread.is_none(), |el| el.child(
                 div().flex_shrink_0().p_2().rounded_lg().border_1().border_color(rgb(BORDER)).child(crate::layout::note("thread-absent",
-                    "This thread is not present in the selected frame. Move to another frame or return to Threads. Values are not carried forward from an earlier frame.",
+                    "This thread is not present in the selected frame. Move to another frame or return to Overview. Values are not carried forward from an earlier frame.",
                 )),
             ))
             .child(
