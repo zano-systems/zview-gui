@@ -2839,6 +2839,9 @@ fn about_credits_zano_systems_and_bundles_the_brand_mark() {
             "{path}"
         );
     }
+    let logo = super::help::ZANO_LOGO_PNG;
+    assert_eq!(&logo[1..4], b"PNG");
+    assert!(logo.len() < 32 * 1024, "keep the bundled logo small");
     for icon in [
         "icons/keyboard.svg",
         "icons/github.svg",
