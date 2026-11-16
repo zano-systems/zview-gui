@@ -8,7 +8,7 @@ import signal
 import webbrowser
 from pathlib import Path
 
-from aiohttp import web
+from aiohttp import ClientError, ClientSession, ClientTimeout, web
 from yaml import YAMLError
 from zview.runner_config import BuildDirError
 from zview.target import Target
@@ -382,8 +382,33 @@ async def start_live_session(app, live):
     return context
 
 
+def shared_probe(snapshot, context):
+    """The board another adapter is polling Live with this runner and target, if any."""
+    data = (snapshot or {}).get("data") or {}
+    other = data.get("context") or {}
+    if (data.get("source") or {}).get("mode") != "live" or data.get("status") not in {
+        "opening", "reading",
+    }:
+        return None
+    if (other.get("runner"), other.get("target")) != (context.get("runner"), context.get("target")):
+        return None
+    return other.get("board") or "the same target"
+
+
+async def existing_session(host, port):
+    """The session snapshot of the adapter already on ``port``, if it is one."""
+    try:
+        async with ClientSession(timeout=ClientTimeout(total=1)) as client, \
+                client.get(f"http://{host}:{port}/api/session") as response:
+            return await response.json() if response.status == 200 else None
+    except (ClientError, asyncio.TimeoutError, ValueError):
+        return None
+
+
 async def bind(runner, host, port, console):
-    """Bind ``port``; ``None`` means DEFAULT_PORT, or any free port when it is taken."""
+    """Bind ``port``; ``None`` means DEFAULT_PORT, or any free port when it is taken.
+
+    Returns the URL and whether it fell back from a taken DEFAULT_PORT."""
     try:
         await web.TCPSite(runner, host, DEFAULT_PORT if port is None else port).start()
     except OSError as exc:
@@ -392,7 +417,8 @@ async def bind(runner, host, port, console):
                           "Choose another --port, or 0 for any free port.") from None
         console.warning(f"port {DEFAULT_PORT} is in use; using a free port.")
         await web.TCPSite(runner, host, 0).start()
-    return f"http://{host}:{runner.addresses[0][1]}/"
+        return f"http://{host}:{runner.addresses[0][1]}/", True
+    return f"http://{host}:{runner.addresses[0][1]}/", False
 
 
 async def serve(data_root, *, host="127.0.0.1", port=None, period=0.1, heap_period=1.,
@@ -406,15 +432,22 @@ async def serve(data_root, *, host="127.0.0.1", port=None, period=0.1, heap_peri
     runner = web.AppRunner(app)
     await runner.setup()
     try:
-        url = await bind(runner, host, port, console)
+        url, fell_back = await bind(runner, host, port, console)
     except BaseException:
         await runner.cleanup()
         raise
     try:
         if live is not None:
+            other = await existing_session(host, DEFAULT_PORT) if fell_back else None
             try:
                 context = await start_live_session(app, live)
                 console.connecting(context)
+                board = shared_probe(other, context)
+                if board is not None:
+                    console.warning(
+                        f"another ZView GUI session (http://{host}:{DEFAULT_PORT}/) is already "
+                        f"reading {board} via {context['runner']}. Both share the probe and slow "
+                        "down; stop it for full speed.")
             except (SessionBusy, ValueError, OSError, RuntimeError, KeyError, TypeError,
                     BuildDirError, YAMLError) as exc:
                 # Keep serving: the session dialog can correct the configuration.
