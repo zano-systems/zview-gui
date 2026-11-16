@@ -7,7 +7,7 @@ import yaml
 from zview.runner_config import find_elf, image_dir
 from zview.target import AVAILABLE_RUNNERS, Target
 
-from paths import input_path, local_path
+from .paths import input_path, local_path
 
 
 def artifact(root, path):

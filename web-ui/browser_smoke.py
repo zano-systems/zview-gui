@@ -12,11 +12,10 @@ from pathlib import Path
 import yaml
 from aiohttp import ClientSession, web
 from playwright.async_api import async_playwright
-
-from server import SOCKETS, create_app
-from test_native_dialog import ScriptedDialogs
 from test_build_context import make_build
-from session import SessionController
+from test_native_dialog import ScriptedDialogs
+from zview_gui.server import SOCKETS, create_app
+from zview_gui.session import SessionController
 
 ROOT = Path(__file__).resolve().parent.parent
 RECORDING = "test-data/tests/fixtures/recordings/sys_heap_v4.3.ndjson.gz"

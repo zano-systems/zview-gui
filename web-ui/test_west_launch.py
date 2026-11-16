@@ -1,4 +1,4 @@
-"""`west zview-gui` helpers and the adapter's auto-connect startup path."""
+"""Launch helpers, the `zview-gui` command and the adapter's auto-connect startup path."""
 
 import asyncio
 import io
@@ -10,14 +10,12 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from urllib.request import urlopen
 
-import server
 from aiohttp import web
-from console import Console
-from session import SessionController
 from test_build_context import make_build
-from west_launch import data_root_for, heap_period, live_request, site_ready, zview_pin
-
-ROOT = Path(__file__).resolve().parent.parent
+from zview_gui import cli, server
+from zview_gui.console import Console
+from zview_gui.launch import data_root_for, heap_period, live_request
+from zview_gui.session import SessionController
 
 
 class HelperTests(unittest.TestCase):
@@ -27,23 +25,32 @@ class HelperTests(unittest.TestCase):
         self.top = Path(temp.name).resolve()
         self.build = make_build(self.top)
 
-    def test_pin_matches_the_adapter_requirement(self):
-        pin = zview_pin()
-        self.assertRegex(pin, r"^\d+\.\d+\.\d+$")
-        self.assertIn(f"zview=={pin}", (ROOT / "web-ui/requirements.txt").read_text())
-        bad = self.top / "requirements.txt"
-        bad.write_text("aiohttp==1\nzview @ git+https://example.invalid/zview.git@abc1234\n")
-        with self.assertRaises(ValueError):
-            zview_pin(bad)
+    def make_site(self, name):
+        site = self.top / name
+        (site / "pkg").mkdir(parents=True)
+        (site / "index.html").write_text(f"<html>{name}</html>")
+        (site / "pkg" / "zview_desktop_bg.wasm").write_bytes(b"\0asm")
+        return site
 
     def test_site_needs_page_and_wasm(self):
         site = self.top / "web"
-        self.assertFalse(site_ready(site))
+        self.assertFalse(server.site_ready(site))
         (site / "pkg").mkdir(parents=True)
         (site / "index.html").write_text("<html></html>")
-        self.assertFalse(site_ready(site))
+        self.assertFalse(server.site_ready(site))
         (site / "pkg" / "zview_desktop_bg.wasm").write_bytes(b"\0asm")
-        self.assertTrue(site_ready(site))
+        self.assertTrue(server.site_ready(site))
+
+    def test_packaged_site_comes_before_the_checkout_build(self):
+        packaged, checkout = self.top / "packaged", self.make_site("checkout")
+        with patch.object(server, "PACKAGED_SITE", packaged), \
+                patch.object(server, "CHECKOUT_SITE", checkout):
+            self.assertEqual(server.default_site(), checkout)
+            self.make_site("packaged")
+            self.assertEqual(server.default_site(), packaged)
+        with patch.object(server, "PACKAGED_SITE", self.top / "none"), \
+                patch.object(server, "CHECKOUT_SITE", self.top / "none2"):
+            self.assertEqual(server.default_site(), self.top / "none")
 
     def test_heap_maps_follow_polling_unless_set(self):
         self.assertEqual(heap_period(0.1, None), 0.1)
@@ -95,7 +102,7 @@ class ServeTests(unittest.IsolatedAsyncioTestCase):
         stop = asyncio.Event()
         ready = asyncio.Future()
         with patch.object(SessionController, "start_live", start_live), \
-                patch("server.webbrowser.open") as opened:
+                patch("zview_gui.server.webbrowser.open") as opened:
             task = asyncio.create_task(server.serve(
                 self.root, port=0, live=live, open_browser=True,
                 ready=ready.set_result, stop=stop,
@@ -136,7 +143,7 @@ class ServeTests(unittest.IsolatedAsyncioTestCase):
             taken.bind(("127.0.0.1", 0))
             taken.listen()
             busy = taken.getsockname()[1]
-            with patch("server.DEFAULT_PORT", busy):
+            with patch("zview_gui.server.DEFAULT_PORT", busy):
                 stop = asyncio.Event()
                 ready = asyncio.Future()
                 task = asyncio.create_task(server.serve(
@@ -159,7 +166,7 @@ class ServeTests(unittest.IsolatedAsyncioTestCase):
         busy = runner.addresses[0][1]
         out = io.StringIO()
         try:
-            with patch("server.DEFAULT_PORT", busy), \
+            with patch("zview_gui.server.DEFAULT_PORT", busy), \
                     patch.object(SessionController, "start_live", AsyncMock()):
                 stop, ready = asyncio.Event(), asyncio.Future()
                 task = asyncio.create_task(server.serve(
@@ -190,6 +197,60 @@ class ServeTests(unittest.IsolatedAsyncioTestCase):
         start_live = AsyncMock()
         await self.run_serve(None, start_live)
         start_live.assert_not_awaited()
+
+
+class CommandLineTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.top = Path(temp.name).resolve()
+        self.build = make_build(self.top)
+        self.site = self.top / "site"
+        (self.site / "pkg").mkdir(parents=True)
+        (self.site / "index.html").write_text("<html></html>")
+        (self.site / "pkg" / "zview_desktop_bg.wasm").write_bytes(b"\0asm")
+
+    def run_main(self, *argv):
+        served = {}
+
+        async def serve(root, **kwargs):
+            served.update(kwargs, root=root)
+
+        with patch("zview_gui.server.serve", serve), \
+                patch("zview.logging_setup.configure", return_value=self.top / "zview.log"), \
+                patch("sys.stdout", io.StringIO()) as out, \
+                patch("sys.stderr", io.StringIO()) as err:
+            code = cli.main(["--site", str(self.site), *argv])
+        self.out = out.getvalue()
+        return code, served, err.getvalue()
+
+    def test_build_dir_connects_live_from_its_sources_root(self):
+        code, served, _ = self.run_main("-d", str(self.build), "-r", "pyocd", "--no-open")
+        self.assertEqual(code, 0)
+        self.assertEqual(served["root"], self.top)
+        self.assertEqual(served["live"], {"build_dir": "build", "runner": "pyocd"})
+        self.assertEqual(served["site"], self.site)
+        self.assertIn(f"Browser site: {self.site}", self.out)
+        self.assertFalse(served["open_browser"])
+        self.assertEqual(served["heap_period"], 0.1)
+
+    def test_without_a_build_it_serves_replay_from_the_data_root(self):
+        code, served, _ = self.run_main("--data-root", str(self.top))
+        self.assertEqual(code, 0)
+        self.assertIsNone(served["live"])
+        self.assertEqual(served["root"], self.top)
+        self.assertTrue(served["open_browser"])
+
+    def test_overrides_without_a_build_and_missing_sites_are_errors(self):
+        code, served, err = self.run_main("-r", "jlink")
+        self.assertEqual((code, served), (1, {}))
+        self.assertIn("need a build directory", err)
+        self.site = self.top / "missing"
+        code, _, err = self.run_main("-d", str(self.build))
+        self.assertEqual(code, 1)
+        self.assertIn("No browser site", err)
+        with self.assertRaises(SystemExit), patch("sys.stderr", io.StringIO()):
+            cli.main(["-d", str(self.top / "nowhere")])
 
 
 class SharedProbeTests(unittest.TestCase):

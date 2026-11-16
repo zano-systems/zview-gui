@@ -9,9 +9,8 @@ from zview.backend.base import ThreadInfo
 from zview.core import Core
 from zview.kernel.threads import Threads
 from zview.selection import Selection
-
-from session import read_live
-from view_selection import LiveView
+from zview_gui.session import read_live
+from zview_gui.view_selection import LiveView
 
 
 class UsageWindowTests(unittest.TestCase):

@@ -9,12 +9,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from test_packaging import zview_pin
 from zview.backend.replay import ReplayScraper
 from zview.frames import Fatal, Frame, Notice, ReplayEnd
 from zview.target import Target
-
-from session import read_replay
-from west_launch import zview_pin
+from zview_gui.session import read_replay
 
 ROOT = Path(__file__).resolve().parent.parent
 RECORDING = ROOT / "test-data/tests/fixtures/recordings/sys_heap_v4.3.ndjson.gz"
@@ -59,7 +58,7 @@ class ReplayLifecycleTests(unittest.TestCase):
             finally:
                 order.append("disconnect")
 
-        with patch("session.Target", return_value=SimpleNamespace(open=opened)):
+        with patch("zview_gui.session.Target", return_value=SimpleNamespace(open=opened)):
             try:
                 return read_replay(RECORDING, ELF, threading.Event(), emit)
             finally:
@@ -94,7 +93,7 @@ class ReplayLifecycleTests(unittest.TestCase):
     def test_stop_before_open_does_not_acquire_a_target(self):
         stop = threading.Event()
         stop.set()
-        with patch("session.Target") as target:
+        with patch("zview_gui.session.Target") as target:
             self.assertEqual(read_replay(RECORDING, ELF, stop, lambda *_: None), ("stopped", None))
             target.assert_not_called()
 

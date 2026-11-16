@@ -10,16 +10,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from aiohttp.test_utils import AioHTTPTestCase
+from test_build_context import make_build
 from zview.backend.base import HeapInfo
 from zview.core import Core
 from zview.selection import Selection
-
-from heap_capture import HeapCapture
-from server import create_app
-from session import SessionController, read_live
-from test_build_context import make_build
-from view_selection import KERNEL_GROUPS, LiveView, catalog, compile_view
-
+from zview_gui.heap_capture import HeapCapture
+from zview_gui.server import create_app
+from zview_gui.session import SessionController, read_live
+from zview_gui.view_selection import KERNEL_GROUPS, LiveView, catalog, compile_view
 
 A = {"address": 4096, "name": "heap[0]*"}
 B = {"address": 8192, "name": "heap0other"}

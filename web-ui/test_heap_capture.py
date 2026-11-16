@@ -12,15 +12,13 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from aiohttp.test_utils import AioHTTPTestCase
+from test_build_context import make_build
 from zview.backend.base import HeapInfo
 from zview.core import Core
 from zview.frames import Frame, Notice
-
-from heap_capture import HeapCapture, HeapCaptureBusy
-from server import create_app
-from session import SessionController, read_live
-from test_build_context import make_build
-
+from zview_gui.heap_capture import HeapCapture, HeapCaptureBusy
+from zview_gui.server import create_app
+from zview_gui.session import SessionController, read_live
 
 HEAP = {"address": 4096, "name": "packet_heap"}
 OTHER = {"address": 8192, "name": "other_heap"}
@@ -211,7 +209,7 @@ class CaptureTests(unittest.TestCase):
             elif kind == "heap_map":
                 maps.append(data)
 
-        with patch("session.serialize_frame", side_effect=lambda groups: groups):
+        with patch("zview_gui.session.serialize_frame", side_effect=lambda groups: groups):
             result = read_live(SimpleNamespace(open=opened), stop, emit, capture=capture, period=poll_period)
         self.assertEqual(result, ("stopped", None))
         self.assertIsNone(selected[0])

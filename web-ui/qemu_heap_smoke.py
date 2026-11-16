@@ -11,9 +11,8 @@ import uuid
 from pathlib import Path
 
 from aiohttp import ClientSession, web
-
-from build_context import resolve_build
-from server import create_app
+from zview_gui.build_context import resolve_build
+from zview_gui.server import create_app
 
 
 async def run(args):

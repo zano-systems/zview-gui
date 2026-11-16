@@ -7,7 +7,7 @@ import os
 import shutil
 import sys
 
-from paths import input_path, local_path
+from .paths import input_path, local_path
 
 KINDS = {"directory", "elf", "recording"}
 TITLES = {

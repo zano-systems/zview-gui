@@ -9,12 +9,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 from aiohttp.test_utils import AioHTTPTestCase
-
-from native_dialog import (
-    NativeDialogBusy, NativeDialogs, initial_directory, native_command, validate_selection,
+from zview_gui.native_dialog import (
+    NativeDialogBusy,
+    NativeDialogs,
+    initial_directory,
+    native_command,
+    validate_selection,
 )
-from server import CONTROLLER, create_app
-from session import Session
+from zview_gui.server import CONTROLLER, create_app
+from zview_gui.session import Session
 
 
 class NativePathTests(unittest.TestCase):
@@ -79,7 +82,7 @@ class NativePathTests(unittest.TestCase):
 
 class NativeProcessTests(unittest.IsolatedAsyncioTestCase):
     def command(self, code, output="json"):
-        return patch("native_dialog.native_command", return_value=(
+        return patch("zview_gui.native_dialog.native_command", return_value=(
             [sys.executable, "-c", code], None, output
         ))
 
