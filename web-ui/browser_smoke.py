@@ -34,6 +34,10 @@ async def wait_state(page, predicate, description, timeout=20):
     while asyncio.get_running_loop().time() < deadline:
         last = await state(page)
         if predicate(last):
+            # State changes repaint on the next frame. Clicking before that hits
+            # the previous frame (e.g. a still-disabled button), which optimized
+            # builds reach first.
+            await page.evaluate("new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))")
             return last
         await asyncio.sleep(0.1)
     raise AssertionError(f"Timed out waiting for {description}: {last}")
