@@ -1,0 +1,101 @@
+name: Release
+
+# A `vX.Y.Z` tag matching pyproject.toml builds the optimized browser site,
+# packs it into the zview-gui wheel and publishes that to PyPI through trusted
+# publishing (no stored token). `west packages pip --install` installs it.
+# Running it by hand builds and checks the wheel and uploads it as an artifact.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  BINARYEN: version_133
+  BINARYEN_SHA256: 2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489
+
+jobs:
+  wheel:
+    name: Build the zview-gui wheel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.10"
+      - name: Check the tag matches the package version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          test "v${version}" = "${GITHUB_REF_NAME}" || {
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match pyproject.toml version ${version}"; exit 1; }
+      - name: Install matching wasm-bindgen
+        run: cargo install wasm-bindgen-cli --version 0.2.129 --locked --root target/tools
+      - name: Install wasm-opt (pinned Binaryen, checksum verified)
+        run: |
+          archive="binaryen-${BINARYEN}-x86_64-linux.tar.gz"
+          curl -sSfL -o "${RUNNER_TEMP}/${archive}" \
+            "https://github.com/WebAssembly/binaryen/releases/download/${BINARYEN}/${archive}"
+          echo "${BINARYEN_SHA256}  ${RUNNER_TEMP}/${archive}" | sha256sum -c -
+          tar -xzf "${RUNNER_TEMP}/${archive}" -C "${RUNNER_TEMP}"
+          echo "WASM_OPT=${RUNNER_TEMP}/binaryen-${BINARYEN}/bin/wasm-opt" >> "${GITHUB_ENV}"
+      - name: Build the release site
+        env:
+          ZVIEW_REQUIRE_WASM_OPT: "1"
+        run: python3 scripts/web_ui.py build --release
+      - name: Test the adapter and the package metadata
+        run: |
+          python -m pip install -r web-ui/requirements-browser.txt
+          python -m pip check
+          python -m unittest discover -s web-ui -p 'test_*.py'
+      - name: Smoke-test the optimized site with the real adapter
+        run: |
+          python -m playwright install --with-deps chromium
+          python web-ui/browser_smoke.py
+      - name: Build and check the wheel
+        run: |
+          python -m pip install build==1.6.1 twine==7.0.0
+          python -m build --wheel --outdir dist
+          python -m twine check --strict dist/*.whl
+          python3 scripts/check_wheel.py contents dist/*.whl
+      - name: Serve the site from the installed wheel
+        run: |
+          python -m venv "${RUNNER_TEMP}/wheel"
+          "${RUNNER_TEMP}/wheel/bin/python" -m pip install dist/*.whl
+          "${RUNNER_TEMP}/wheel/bin/python" -m pip check
+          "${RUNNER_TEMP}/wheel/bin/python" -I scripts/check_wheel.py serve
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zview-gui-wheel
+          path: dist/*.whl
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: wheel
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/zview-gui/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: zview-gui-wheel
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3

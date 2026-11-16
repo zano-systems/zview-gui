@@ -48,6 +48,19 @@ jobs:
         run: python3 scripts/web_ui.py build
       - name: Check Rust web client
         run: cargo +nightly clippy --locked --lib --target wasm32-unknown-unknown -- -D warnings
+      - name: Build and check the Python package
+        run: |
+          python -m pip install build==1.6.1 twine==7.0.0
+          python -m build --wheel --outdir dist
+          python -m twine check --strict dist/*.whl
+          python3 scripts/check_wheel.py contents dist/*.whl
+      - name: Serve the site from the installed wheel
+        run: |
+          python -m venv "${RUNNER_TEMP}/wheel"
+          "${RUNNER_TEMP}/wheel/bin/python" -m pip install dist/*.whl
+          "${RUNNER_TEMP}/wheel/bin/python" -m pip check
+          "${RUNNER_TEMP}/wheel/bin/zview-gui" --version
+          "${RUNNER_TEMP}/wheel/bin/python" -I scripts/check_wheel.py serve
       - name: Install Python replay adapter
         run: |
           python -m pip install -r web-ui/requirements-browser.txt
