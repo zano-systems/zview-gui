@@ -1,6 +1,6 @@
 //! Editable CPU/Load window; backend acknowledgement remains the applied value.
 use super::*;
-use crate::adapter_protocol::Session;
+use crate::adapter_protocol::{Session, step_usage};
 use gpui_kit::component::input::{NumberInput, NumberInputEvent, StepAction};
 
 pub(super) struct UsageInput {
@@ -42,10 +42,7 @@ impl UsageInput {
                 .filter(|v| (1..=64).contains(v))
                 .or_else(|| app.adapter.state.session.as_ref()?.usage_window)
                 .unwrap_or(16);
-            let next = match action {
-                StepAction::Increment => value.saturating_add(1).min(64),
-                StepAction::Decrement => value.saturating_sub(1).max(1),
-            };
+            let next = step_usage(value, matches!(action, StepAction::Increment));
             app.adapter.usage.state.update(cx, |input, cx| {
                 input.set_value(next.to_string(), window, cx)
             });
@@ -130,7 +127,7 @@ impl ThreadsApp {
             .flex().items_center().gap_2().flex_shrink_0()
             .aria_label("CPU and Load averaging samples, 1 to 64. Enter applies the edited value.")
             .tooltip(|window, cx| Tooltip::new(
-                "CPU and Load over 1–64 polls. Type an integer and press Enter or leave the field to apply. Buttons and arrow keys step by one. Independent of chart zoom."
+                "CPU and Load over 1–64 polls. Type an integer and press Enter or leave the field to apply. Buttons and arrow keys step through 8, 16, 32 and 64. Independent of chart zoom."
             ).build(window, cx))
             .child(div().text_xs().text_color(rgb(MUTED)).child("CPU / Load"))
             .child(div().debug_selector(|| "cpu-averaging-input".into()).w(px(104.))

@@ -858,8 +858,40 @@ pub fn percentage(value: Option<f64>) -> String {
         .unwrap_or_else(|| "—".into())
 }
 
+/// The values the +/− buttons and arrow keys step through; typing still accepts 1–64.
+pub const USAGE_STEPS: [u32; 4] = [8, 16, 32, 64];
+
+/// The next step above (or below) `value`; at either end it stays put.
+pub fn step_usage(value: u32, increment: bool) -> u32 {
+    if increment {
+        USAGE_STEPS
+            .into_iter()
+            .find(|&step| step > value)
+            .unwrap_or(value)
+    } else {
+        USAGE_STEPS
+            .into_iter()
+            .rev()
+            .find(|&step| step < value)
+            .unwrap_or(value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn usage_steps_go_through_powers_of_two_up_to_64() {
+        use super::step_usage;
+        let up: Vec<u32> = [1, 8, 9, 16, 17, 32, 63, 64]
+            .map(|v| step_usage(v, true))
+            .into();
+        assert_eq!(up, [8, 16, 16, 32, 32, 64, 64, 64]);
+        let down: Vec<u32> = [64, 63, 32, 17, 16, 9, 8, 5]
+            .map(|v| step_usage(v, false))
+            .into();
+        assert_eq!(down, [32, 32, 16, 16, 8, 8, 8, 5]);
+    }
+
     use super::*;
     use serde_json::json;
 

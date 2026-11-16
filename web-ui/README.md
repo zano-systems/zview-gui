@@ -211,7 +211,7 @@ Live CPU and Load use the **same counter window as ZView's TUI** through
 `Core.usage_window`, defaulting to **16 polls**. The **CPU / Load** controls on
 Threads and Thread details use GPUI Kit's **number input** for **1–64 polls**.
 Type an integer and press **Enter** or leave the field with **Tab** to apply;
-the input's buttons and Up/Down keys step by one. Typing does not submit
+the input's buttons and Up/Down keys step through 8, 16, 32 and 64. Typing does not submit
 intermediate digits. Empty/invalid edits restore the applied value, and
 out-of-range integer edits are clamped to the limits. Failed requests also
 restore the last backend-applied value. Each poll still
