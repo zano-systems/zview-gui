@@ -8,6 +8,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
+import web_ui
 from web_ui import Handler, LIMIT, ROOT, ThreadingHTTPServer, read_document
 
 
@@ -42,6 +43,42 @@ class DocumentTests(unittest.TestCase):
                 file.write(b" ")
             with self.assertRaisesRegex(ValueError, "16 MiB"):
                 read_document(path)
+
+
+class WasmOptTests(unittest.TestCase):
+    def test_release_modules_go_through_wasm_opt_with_pinned_flags(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / "target") as directory:
+            log = Path(directory) / "args.json"
+            fake = Path(directory) / "wasm-opt"
+            # Records its arguments and halves the module, like a real optimizer.
+            fake.write_text(
+                "#!/usr/bin/env python3\nimport json, sys\n"
+                f"open({str(log)!r}, 'w').write(json.dumps(sys.argv[1:]))\n"
+                "data = open(sys.argv[-3], 'rb').read()\n"
+                "open(sys.argv[-1], 'wb').write(data[: len(data) // 2])\n")
+            fake.chmod(0o755)
+            wasm = Path(directory) / "app.wasm"
+            wasm.write_bytes(b"\0asm" + b"x" * 96)
+            with patch.dict("os.environ", {"WASM_OPT": str(fake)}):
+                web_ui.optimize(wasm)
+            args = json.loads(log.read_text())
+            self.assertEqual(args[0], web_ui.WASM_OPT_LEVEL)
+            self.assertIn("--enable-bulk-memory", args)
+            self.assertIn("--strip-debug", args)
+            self.assertEqual(args[-3:], [str(wasm), "-o", str(wasm)])
+            self.assertEqual(wasm.stat().st_size, 50)
+
+    def test_missing_wasm_opt_is_skipped_unless_required(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / "target") as directory:
+            wasm = Path(directory) / "app.wasm"
+            wasm.write_bytes(b"\0asm")
+            with patch.object(web_ui, "wasm_opt", return_value=None):
+                with patch.dict("os.environ", {}, clear=False), patch("builtins.print"):
+                    web_ui.optimize(wasm)
+                self.assertEqual(wasm.read_bytes(), b"\0asm")
+                with patch.dict("os.environ", {"ZVIEW_REQUIRE_WASM_OPT": "1"}):
+                    with self.assertRaisesRegex(ValueError, "wasm-opt is required"):
+                        web_ui.optimize(wasm)
 
 
 class QuietHandler(Handler):
