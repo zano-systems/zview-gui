@@ -2806,3 +2806,38 @@ fn message_queue_partial_data_and_small_layout_render_without_stale_values(
         });
     });
 }
+
+#[test]
+fn help_shortcuts_cover_the_key_bindings() {
+    let keys: Vec<&str> = super::help::SHORTCUTS
+        .iter()
+        .flat_map(|(_, rows)| rows.iter().flat_map(|row| row.keys.iter().copied()))
+        .collect();
+    // Every bound key in `bind_keys`, plus the strip-map keys.
+    for key in ["↑", "↓", "Enter", "Esc", "Tab", "←", "→", "Home", "End"] {
+        assert!(keys.contains(&key), "{key}");
+    }
+    let titles: Vec<&str> = super::help::guide(true)
+        .iter()
+        .map(|(title, _)| *title)
+        .collect();
+    assert_eq!(titles, ["Data sources", "Navigation", "Reading the views"]);
+}
+
+#[test]
+fn about_credits_zano_systems_and_bundles_the_brand_mark() {
+    use gpui_kit::AssetSource;
+    assert_eq!(super::help::ZANO_GITHUB, "https://github.com/zano-systems");
+    assert_eq!(super::help::ZANO_WEBSITE, "https://zano.systems/");
+    let assets = super::app_assets::AppAssets;
+    let mark = assets.load(super::help::MARK).unwrap().expect("brand mark");
+    assert!(std::str::from_utf8(&mark).unwrap().contains("<svg"));
+    for icon in [
+        "icons/keyboard.svg",
+        "icons/github.svg",
+        "icons/globe.svg",
+        "icons/info.svg",
+    ] {
+        assert!(assets.load(icon).unwrap().is_some(), "{icon}");
+    }
+}

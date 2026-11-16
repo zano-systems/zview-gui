@@ -3,6 +3,7 @@ mod app_assets;
 mod chart_zoom;
 mod heap_detail;
 mod heap_map;
+mod help;
 mod kernel_model;
 mod kernel_objects;
 mod layout;
@@ -75,35 +76,8 @@ const PURPLE: u32 = 0xac91f5;
 const GREEN: u32 = 0x69cbb1;
 const BLUE: u32 = 0x75b3f1;
 
-fn help_text(browser: bool) -> String {
-    let source_help = if browser {
-        concat!(
-            "Open dump selects an already-decoded JSON snapshot or snapshot array from your device. ",
-            "Files are read locally without uploading. Select a changed file again to reload it. ",
-            "A failed load leaves the current session intact. Arrays enable frame navigation and charts. ",
-        )
-    } else {
-        concat!(
-            "Open dump loads zview dump --json output. Open recording asks for a .ndjson.gz recording and its matching ELF; Python with ZView dependencies is required (ZVIEW_PYTHON). ",
-            "Reload repeats the import. Cancel or a failed import leaves the current session intact. Arrays enable frame navigation and charts. ",
-        )
-    };
-    format!(
-        "{source_help}{}",
-        concat!(
-            "Click a thread row to open details. Focus the thread table and use Up/Down then Enter. ",
-            "Escape or Back to Overview returns without changing session time. CPU excludes idle. ",
-            "Stack watermark is not total device RAM. Options are raw target flags. ",
-            "Expand Kernel objects in the sidebar to filter by type; search filters by name/address. ",
-            "Click a kernel-object row, or focus it with Tab and press Enter, for details. ",
-            "Escape and Back return with filters intact. Breadcrumbs open their named list with search cleared; Kernel objects shows all types. ",
-            "Previous/Next changes the shared snapshot. Histories show sampled counts/depth, not individual operations. ",
-            "State bars show counts, occupancy, or lock/busy state—not CPU usage. ",
-            "Unknown wait queues are labelled unavailable; known empty queues are blank. ",
-            "Heap maps show captured chunks and relative offsets, not absolute block addresses.",
-        )
-    )
-}
+#[cfg(test)]
+use help::help_text;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Screen {
@@ -925,16 +899,7 @@ impl ThreadsApp {
                             .flex()
                             .items_center()
                             .gap_3()
-                            .child(
-                                div()
-                                    .size_9()
-                                    .rounded_lg()
-                                    .bg(rgb(0x7561cd))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child("Z"),
-                            )
+                            .child(help::mark(px(36.)))
                             .when(!self.collapsed, |el| {
                                 el.child(
                                     div()
@@ -987,21 +952,17 @@ impl ThreadsApp {
             )
             .child(
                 SidebarGroup::new("Session").child(
-                    SidebarMenu::new().child(
-                        SidebarMenuItem::new("Help & shortcuts")
-                            .icon(IconName::Info)
-                            .on_click(cx.listener(|_, _, window, cx| {
-                                window.open_dialog(cx, |dialog, _, _| {
-                                    dialog
-                                        .title(if cfg!(target_family = "wasm") {
-                                            "ZView browser"
-                                        } else {
-                                            "ZView desktop"
-                                        })
-                                        .child(help_text(cfg!(target_family = "wasm")))
-                                });
-                            })),
-                    ),
+                    SidebarMenu::new()
+                        .child(
+                            SidebarMenuItem::new("Help & shortcuts")
+                                .icon(Icon::new(assets::IconName::Keyboard))
+                                .on_click(
+                                    cx.listener(|_, _, window, cx| help::open_help(window, cx)),
+                                ),
+                        )
+                        .child(SidebarMenuItem::new("About").icon(IconName::Info).on_click(
+                            cx.listener(|_, _, window, cx| help::open_about(window, cx)),
+                        )),
                 ),
             )
             .footer(SidebarFooter::new().p_4().when(

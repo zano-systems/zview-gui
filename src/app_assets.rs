@@ -3,7 +3,16 @@ use std::borrow::Cow;
 
 assets::icon_assets!(
     ExtraIcons,
-    [Spool, Boxes, Activity, CircleDashed, RotateCcw]
+    [
+        Spool,
+        Boxes,
+        Activity,
+        CircleDashed,
+        RotateCcw,
+        Keyboard,
+        Github,
+        Globe
+    ]
 );
 
 // Embed web controls too: no CDN requests or asset base-path assumptions.
@@ -63,6 +72,9 @@ pub(super) struct AppAssets;
 
 impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        if path == super::help::MARK {
+            return Ok(Some(Cow::Borrowed(super::help::MARK_SVG)));
+        }
         if let Some(bytes) = ExtraIcons.load(path)? {
             return Ok(Some(bytes));
         }
