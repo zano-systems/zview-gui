@@ -421,9 +421,10 @@ pub(crate) fn open_about(window: &mut Window, cx: &mut App) {
                         )),
                 )
                 .child(
-                    div().text_xs().text_color(rgb(MUTED)).child(
-                        "Apache License 2.0. Zephyr® is a trademark of the Linux Foundation.",
-                    ),
+                    div()
+                        .text_xs()
+                        .text_color(rgb(MUTED))
+                        .child("Apache License 2.0."),
                 ),
         )
     });
