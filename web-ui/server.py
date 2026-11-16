@@ -383,16 +383,24 @@ async def start_live_session(app, live):
 
 
 def shared_probe(snapshot, context):
-    """The board another adapter is polling Live with this runner and target, if any."""
-    data = (snapshot or {}).get("data") or {}
-    other = data.get("context") or {}
-    if (data.get("source") or {}).get("mode") != "live" or data.get("status") not in {
+    """The board another adapter is polling Live with this runner and target, if any.
+
+    ``snapshot`` is whatever JSON the service on the port returned, so anything
+    that is not shaped like a ZView session means "no shared probe"."""
+    def mapping(value):
+        return value if isinstance(value, dict) else {}
+
+    data = mapping(mapping(snapshot).get("data"))
+    other = mapping(data.get("context"))
+    # Compared, never hashed: an unhashable status must not raise.
+    if mapping(data.get("source")).get("mode") != "live" or data.get("status") not in (
         "opening", "reading",
-    }:
+    ):
         return None
     if (other.get("runner"), other.get("target")) != (context.get("runner"), context.get("target")):
         return None
-    return other.get("board") or "the same target"
+    board = other.get("board")
+    return board if isinstance(board, str) and board else "the same target"
 
 
 async def existing_session(host, port):
