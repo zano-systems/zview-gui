@@ -72,8 +72,8 @@ pub(super) struct AppAssets;
 
 impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        if path == super::help::MARK {
-            return Ok(Some(Cow::Borrowed(super::help::MARK_SVG)));
+        if let Some((_, bytes)) = super::help::MARK_LAYERS.iter().find(|(p, _)| *p == path) {
+            return Ok(Some(Cow::Borrowed(bytes)));
         }
         if let Some(bytes) = ExtraIcons.load(path)? {
             return Ok(Some(bytes));

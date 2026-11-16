@@ -2830,8 +2830,15 @@ fn about_credits_zano_systems_and_bundles_the_brand_mark() {
     assert_eq!(super::help::ZANO_GITHUB, "https://github.com/zano-systems");
     assert_eq!(super::help::ZANO_WEBSITE, "https://zano.systems/");
     let assets = super::app_assets::AppAssets;
-    let mark = assets.load(super::help::MARK).unwrap().expect("brand mark");
-    assert!(std::str::from_utf8(&mark).unwrap().contains("<svg"));
+    for (path, _) in super::help::MARK_LAYERS {
+        let layer = assets.load(path).unwrap().expect(path);
+        assert!(
+            std::str::from_utf8(&layer)
+                .unwrap()
+                .contains("currentColor"),
+            "{path}"
+        );
+    }
     for icon in [
         "icons/keyboard.svg",
         "icons/github.svg",
