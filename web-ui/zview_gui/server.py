@@ -1,6 +1,5 @@
 """Local-only HTTP/WebSocket adapter and static web frontend."""
 
-import argparse
 import asyncio
 import contextlib
 import errno
@@ -13,21 +12,37 @@ from yaml import YAMLError
 from zview.runner_config import BuildDirError
 from zview.target import Target
 
-from build_context import resolve_build
-from console import Console
-from heap_capture import HeapCaptureBusy
-from native_dialog import NativeDialogBusy, NativeDialogs, initial_directory, validate_selection
-from paths import INPUT_LIMIT, input_path
-from session import SessionBusy, SessionController
-from view_selection import ViewBusy
+from .build_context import resolve_build
+from .console import Console
+from .heap_capture import HeapCaptureBusy
+from .native_dialog import NativeDialogBusy, NativeDialogs, initial_directory, validate_selection
+from .paths import INPUT_LIMIT, input_path
+from .session import SessionBusy, SessionController
+from .view_selection import ViewBusy
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_PORT = 8765
-FRONTEND = HERE.parent / "target" / "web"
+# The wheel ships the optimized site inside the package; a source checkout
+# (or an editable install) serves the one `just web-build` writes.
+PACKAGED_SITE = HERE / "site"
+CHECKOUT_SITE = HERE.parents[1] / "target" / "web"
 CONTROLLER = web.AppKey("controller", SessionController)
 DATA_ROOT = web.AppKey("data_root", Path)
 SOCKETS = web.AppKey("sockets", set)
 DIALOGS = web.AppKey("dialogs", NativeDialogs)
+SITE = web.AppKey("site", Path)
+
+
+def site_ready(site):
+    """The browser site is present: its page and WASM module."""
+    site = Path(site)
+    return (site / "index.html").is_file() and (site / "pkg" / "zview_desktop_bg.wasm").is_file()
+
+
+def default_site():
+    """The packaged site, else the checkout's build; the packaged path if neither exists."""
+    return next((site for site in (PACKAGED_SITE, CHECKOUT_SITE) if site_ready(site)),
+                PACKAGED_SITE)
 
 
 @web.middleware
@@ -334,14 +349,16 @@ async def shutdown(app):
 
 
 async def frontend_asset(request):
-    if not (FRONTEND / "index.html").is_file():
+    site = request.app[SITE]
+    if not (site / "index.html").is_file():
         raise web.HTTPServiceUnavailable(
-            text="Rust frontend is not built. Run: just web-setup && just web-build"
+            text="The browser site is missing. Reinstall zview-gui, or in a source "
+                 "checkout run: just web-setup && just web-build"
         )
     filename = request.match_info.get("asset", "index.html")
-    path = (FRONTEND / filename).resolve()
+    path = (site / filename).resolve()
     if (
-        not path.is_relative_to(FRONTEND.resolve())
+        not path.is_relative_to(site.resolve())
         or path.suffix not in {".html", ".js", ".mjs", ".wasm", ".css", ".ttf", ".txt"}
         or not path.is_file()
     ):
@@ -350,9 +367,10 @@ async def frontend_asset(request):
 
 
 def create_app(data_root, controller=None, dialogs=None, *,
-               period=0.1, heap_period=1., heap_cooldown=1.):
+               period=0.1, heap_period=1., heap_cooldown=1., site=None):
     app = web.Application(middlewares=[local_only], client_max_size=8192)
     app[DATA_ROOT] = Path(data_root).resolve(strict=True)
+    app[SITE] = Path(site if site is not None else default_site()).resolve()
     app[CONTROLLER] = controller if controller is not None else SessionController(
         period=period, heap_period=heap_period, heap_cooldown=heap_cooldown,
     )
@@ -431,11 +449,11 @@ async def bind(runner, host, port, console):
 
 async def serve(data_root, *, host="127.0.0.1", port=None, period=0.1, heap_period=1.,
                 heap_cooldown=1., live=None, open_browser=False, ready=None, stop=None,
-                console=None):
+                console=None, site=None):
     """Serve until ``stop`` is set (or Ctrl+C), optionally auto-connecting ``live``."""
     console = console if console is not None else Console()
     app = create_app(data_root, period=period, heap_period=heap_period,
-                     heap_cooldown=heap_cooldown)
+                     heap_cooldown=heap_cooldown, site=site)
     app[CONTROLLER].observer = console.session_event
     runner = web.AppRunner(app)
     await runner.setup()
@@ -478,49 +496,3 @@ async def serve(data_root, *, host="127.0.0.1", port=None, period=0.1, heap_peri
         console.hint("stopping…")
         await runner.cleanup()
 
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="0 picks a free port.")
-    parser.add_argument("--period", type=float, default=0.1,
-                        help="Live polling period in seconds; 0 polls back-to-back (default: 0.1).")
-    parser.add_argument("--heap-period", type=float, default=1.,
-                        help="Minimum period between live heap capture starts, in seconds (default: 1).")
-    parser.add_argument("--heap-cooldown", type=float, default=1.,
-                        help="Minimum delay after a completed map; 0 allows fastest capture (default: 1).")
-    parser.add_argument(
-        "--data-root",
-        type=Path,
-        default=HERE.parent,
-        help="Trusted input directory; paths outside it are rejected.",
-    )
-    parser.add_argument("--live-build-dir", metavar="DIR",
-                        help="Connect Live to this build at startup (relative to --data-root).")
-    parser.add_argument("--domain", help="Firmware image of a sysbuild build.")
-    parser.add_argument("--elf", help="ELF override (relative to --data-root).")
-    parser.add_argument("--runner", help="Live runner override.")
-    parser.add_argument("--target", help="Live MCU/target override.")
-    parser.add_argument("--frequency", type=int, help="Probe clock override, in Hz.")
-    parser.add_argument("--open", action="store_true", help="Open the browser once serving.")
-    args = parser.parse_args()
-    if not args.data_root.is_dir():
-        parser.error("--data-root must be an existing directory")
-    overrides = {k: getattr(args, k) for k in ("domain", "elf", "runner", "target", "frequency")}
-    if args.live_build_dir is None and any(v is not None for v in overrides.values()):
-        parser.error("Live overrides require --live-build-dir.")
-    live = None
-    if args.live_build_dir is not None:
-        live = {"build_dir": args.live_build_dir,
-                **{k: v for k, v in overrides.items() if v is not None}}
-    try:
-        asyncio.run(serve(args.data_root, port=args.port, period=args.period,
-                          heap_period=args.heap_period, heap_cooldown=args.heap_cooldown,
-                          live=live, open_browser=args.open))
-    except ValueError as exc:
-        parser.error(str(exc))
-    except KeyboardInterrupt:
-        pass
-
-
-if __name__ == "__main__":
-    main()

@@ -12,12 +12,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from aiohttp.test_utils import AioHTTPTestCase
-from zview.frames import Fatal, Frame, Notice
-from zview.core import Core
-
-from server import CONTROLLER, create_app
-from session import SampleRate, SessionController, read_live
 from test_build_context import make_build
+from zview.core import Core
+from zview.frames import Fatal, Frame, Notice
+from zview_gui.server import CONTROLLER, create_app
+from zview_gui.session import SampleRate, SessionController, read_live
 
 
 class LiveReaderTests(unittest.TestCase):
@@ -251,7 +250,7 @@ class LiveApiTests(AioHTTPTestCase):
 
 class LiveControllerTests(unittest.IsolatedAsyncioTestCase):
     async def test_warning_state_survives_snapshot_until_a_successful_frame(self):
-        from session import Session
+        from zview_gui.session import Session
         controller = SessionController()
         controller.session = Session("live", {"mode": "live"}, "elf", status="reading")
         await controller._event("live", "notice", {"message": "retry"})

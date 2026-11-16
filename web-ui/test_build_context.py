@@ -11,9 +11,8 @@ from unittest.mock import patch
 import yaml
 from aiohttp.test_utils import AioHTTPTestCase
 from zview.runner_config import BuildDirError
-
-from build_context import checkout_context, resolve_build
-from server import create_app
+from zview_gui.build_context import checkout_context, resolve_build
+from zview_gui.server import create_app
 
 ROOT = Path(__file__).resolve().parent.parent
 ELF = ROOT / "test-data/tests/fixtures/zephyr.elf"
@@ -55,7 +54,7 @@ class BuildContextTests(unittest.TestCase):
         return resolve_build(self.root, {"mode": "live", "build_dir": "build", **changes})
 
     def test_live_resolves_effective_settings_without_opening_a_probe(self):
-        with patch("build_context.Target.open") as opened:
+        with patch("zview_gui.build_context.Target.open") as opened:
             context = self.resolve()
             opened.assert_not_called()
         self.assertEqual(context["board"], "nrf5340dk/nrf5340/cpuapp")
@@ -87,7 +86,7 @@ class BuildContextTests(unittest.TestCase):
         data["runners"] = ["nrfutil", "nrfjprog", "jlink", "pyocd"]
         data["args"]["jlink"] = ["--device=nRF52833_xxAA", "--speed=4000"]
         runners.write_text(yaml.safe_dump(data))
-        with patch("build_context.Target.open") as opened:
+        with patch("zview_gui.build_context.Target.open") as opened:
             context = self.resolve()
             opened.assert_not_called()
         self.assertEqual((context["runner"], context["target"], context["frequency"]),
@@ -148,13 +147,13 @@ class BuildContextTests(unittest.TestCase):
 
     def test_git_is_labelled_current_checkout_not_firmware_provenance(self):
         source = self.root / "application"
-        with patch("build_context.subprocess.check_output",
+        with patch("zview_gui.build_context.subprocess.check_output",
                    side_effect=["abc123\n", "feature\n", " M app.c\n"]):
             path, git = checkout_context(self.root, str(source))
         self.assertEqual(path, "application")
         self.assertEqual(git["provenance"], "current_checkout")
         self.assertTrue(git["dirty"])
-        with patch("build_context.subprocess.check_output",
+        with patch("zview_gui.build_context.subprocess.check_output",
                    side_effect=subprocess.TimeoutExpired("git", 2)):
             self.assertEqual(checkout_context(self.root, str(source)), ("application", None))
         self.assertEqual(checkout_context(self.root, str(self.root.parent)), (None, None))

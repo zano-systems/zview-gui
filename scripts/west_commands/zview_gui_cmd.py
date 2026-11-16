@@ -3,16 +3,17 @@
 """``west zview-gui``: open the browser UI connected Live to the current build."""
 
 import argparse
-import asyncio
 import os
+import re
 import sys
 from pathlib import Path
 
 from west.commands import WestCommand
 
 ROOT = Path(__file__).resolve().parents[2]
-WEB_UI = ROOT / "web-ui"
 SCRIPTS = ROOT / "scripts"
+# What `west packages pip --install` installs for this module revision.
+REQUIREMENTS = ROOT / "web-ui" / "requirements-west.txt"
 
 EPILOG = """\
 Auto-detected when omitted:
@@ -22,11 +23,19 @@ Auto-detected when omitted:
   -t/--runner-target  from the build directory's runners.yaml
   --data-root         the west workspace, if it holds the build and its sources
 
-It serves the browser site already in the module (target/web) and never
-compiles unless --rebuild is given. One-time setup: `west packages pip
---install`. Rebuilding also needs `just web-setup` in the zview-gui module
-directory (nightly Rust + wasm-bindgen).
+It runs the zview-gui package from PyPI, which ships the browser site. One-time
+setup: `west packages pip --install`. --rebuild compiles the site from this
+module's sources instead; that needs `just web-setup` in the module directory
+(nightly Rust + wasm-bindgen).
 """
+
+
+def required_version(requirements=REQUIREMENTS):
+    """The zview-gui release this module revision installs."""
+    match = re.search(r"^zview-gui\s*==\s*(\S+)\s*$", Path(requirements).read_text(), re.MULTILINE)
+    if match is None:
+        raise ValueError(f"No pinned zview-gui release in {requirements}.")
+    return match.group(1)
 
 
 class ZViewGuiCommand(WestCommand):
@@ -34,8 +43,8 @@ class ZViewGuiCommand(WestCommand):
         super().__init__(
             "zview-gui",
             "open the ZView browser UI connected to the current build",
-            "Build the ZView GUI's WASM site, start its local adapter, connect Live "
-            "to the target described by the build directory, and open the browser.",
+            "Start the ZView GUI's local adapter, connect Live to the target "
+            "described by the build directory, and open the browser.",
         )
 
     def do_add_parser(self, parser_adder):
@@ -46,6 +55,8 @@ class ZViewGuiCommand(WestCommand):
             epilog=EPILOG,
             formatter_class=argparse.RawDescriptionHelpFormatter,
         )
+        # Keep in step with zview_gui.cli.add_serve_options (checked by the
+        # tests); the package may not be installed when west builds its help.
         parser.add_argument("-d", "--build-dir", help="Zephyr build directory.")
         parser.add_argument("--domain", help="Firmware image of a sysbuild build.")
         parser.add_argument("-e", "--elf-file", help="ELF override.")
@@ -63,65 +74,22 @@ class ZViewGuiCommand(WestCommand):
                             help="Local port; 0 picks a free one (default: 8765, "
                                  "or a free port when 8765 is taken).")
         parser.add_argument("--data-root", help="Trusted directory the UI may read paths from.")
-        parser.add_argument("--rebuild", action="store_true",
-                            help="Rebuild the WASM site from source before serving it "
-                                 "(needs `just web-setup`).")
         parser.add_argument("--no-open", action="store_true",
                             help="Do not open the browser.")
+        parser.add_argument("--rebuild", action="store_true",
+                            help="Build the browser site from this module's sources and serve "
+                                 "it instead of the packaged one (needs `just web-setup`).")
         return parser
 
     def do_run(self, args, unknown):
         del unknown
         build_dir = self._build_dir(args)
-        self._use_zview()
-        # Like `west zview`: ZView's warnings (e.g. resynced broken frames) go to
-        # its rotating log file instead of flooding the terminal.
-        from zview.logging_setup import configure as configure_logging
-
-        log = configure_logging()
+        cli = self._package()
+        site = self._build_site() if args.rebuild else None
         try:
-            import aiohttp  # noqa: F401
-        except ImportError:
-            self.die("aiohttp is missing. Run `west packages pip --install`.")
-
-        sys.path.insert(0, str(WEB_UI))
-        import west_launch
-        from console import Console, wants_color
-
-        console = Console(color=self.color_ui and wants_color(sys.stdout))
-        console.field("ZView log", log)
-
-        extra = [args.elf_file] if args.elf_file else []
-        try:
-            root = (Path(args.data_root).resolve() if args.data_root
-                    else west_launch.data_root_for(build_dir, self.topdir, extra))
-            live = west_launch.live_request(
-                root, build_dir, domain=args.domain, elf=args.elf_file, runner=args.runner,
-                target=args.runner_target, frequency=args.frequency,
-            )
-        except ValueError as error:
-            self.die(f"{error} Pass --data-root containing the build and ELF.")
-        console.field("Build directory", build_dir)
-        console.field("Data root", root)
-
-        if args.rebuild:
-            self._build_site()
-        elif not west_launch.site_ready(west_launch.SITE):
-            self.die(f"No browser site in {west_launch.SITE}. Build it once with "
-                     f"`west zview-gui --rebuild`, after `just web-setup` in {ROOT}.")
-
-        import server
-
-        try:
-            asyncio.run(server.serve(
-                root, port=args.port, period=args.period,
-                heap_period=west_launch.heap_period(args.period, args.heap_period),
-                heap_cooldown=args.heap_cooldown, live=live, open_browser=not args.no_open,
-                console=console,
-            ))
-        except KeyboardInterrupt:
-            pass
-        except (OSError, ValueError) as error:
+            cli.run(args, build_dir=build_dir, topdir=self.topdir, site=site,
+                    color=self.color_ui)
+        except cli.LaunchError as error:
             self.die(str(error))
 
     def _build_dir(self, args):
@@ -137,31 +105,19 @@ class ZViewGuiCommand(WestCommand):
                      "Run `west build` or pass -d.")
         return Path(build_dir).resolve()
 
-    def _use_zview(self):
-        """Prefer the manifest's zview checkout, then an installed package."""
-        sys.path.insert(0, str(WEB_UI))
-        from west_launch import zview_pin
-
-        pin = zview_pin()
+    def _package(self):
+        """The installed zview-gui CLI; warns when it is not this module's release."""
         try:
-            project = self.manifest.get_projects(["zview"])[0]
-        except ValueError:
-            project = None
-        source = "an installed package"
-        if project is not None and project.is_cloned():
-            sys.path.insert(0, str(Path(project.abspath) / "src"))
-            source = "the manifest checkout"
-        hint = (f"Pin the manifest `zview` project to v{pin}, "
-                f"or run `pip install zview=={pin}`.")
-        try:
-            import zview
-            import zview.core  # noqa: F401
-            import zview.target  # noqa: F401
+            import zview_gui
+            from zview_gui import cli
         except ImportError as error:
-            self.die(f"ZView session API not found ({error}). {hint}")
-        version = getattr(zview, "__version__", "unknown")
-        if version != pin:
-            self.wrn(f"ZView {version} from {source}; zview-gui is tested with {pin}. {hint}")
+            self.die(f"The zview-gui package is not installed ({error}). "
+                     "Run `west packages pip --install`.")
+        wanted = required_version()
+        if zview_gui.__version__ != wanted:
+            self.wrn(f"zview-gui {zview_gui.__version__} is installed, but this module "
+                     f"revision expects {wanted}. Run `west packages pip --install`.")
+        return cli
 
     def _build_site(self):
         sys.path.insert(0, str(SCRIPTS))
@@ -175,3 +131,4 @@ class ZViewGuiCommand(WestCommand):
             self.die(f"{error} (run it in {ROOT})")
         except (OSError, subprocess.CalledProcessError) as error:
             self.die(f"WASM build failed: {error}")
+        return web_ui.SITE

@@ -17,8 +17,8 @@ from zview.selection import Selection
 from zview.snapshot import serialize_frame
 from zview.target import Target
 
-from heap_capture import HeapCapture, identity, seconds
-from view_selection import GROUPS, LiveView, ViewBusy, catalog
+from .heap_capture import HeapCapture, identity, seconds
+from .view_selection import GROUPS, LiveView, ViewBusy, catalog
 
 PROTOCOL_VERSION = 5
 CLIENT_QUEUE_SIZE = 16

@@ -5,8 +5,8 @@ import io
 import unittest
 from unittest.mock import patch
 
-from console import RESET, STYLES, Console, wants_color
-from session import SessionController
+from zview_gui.console import RESET, STYLES, Console, wants_color
+from zview_gui.session import SessionController
 
 
 def plain():

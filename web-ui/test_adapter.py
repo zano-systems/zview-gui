@@ -10,9 +10,8 @@ from pathlib import Path
 
 from aiohttp import WSMsgType
 from aiohttp.test_utils import AioHTTPTestCase
-
-from server import CONTROLLER, INPUT_LIMIT, create_app, input_path
-from session import CLIENT_QUEUE_SIZE, SessionBusy, SessionController
+from zview_gui.server import CONTROLLER, INPUT_LIMIT, create_app, input_path
+from zview_gui.session import CLIENT_QUEUE_SIZE, SessionBusy, SessionController
 
 ROOT = Path(__file__).resolve().parent.parent
 RECORDING = "test-data/tests/fixtures/recordings/sys_heap_v4.3.ndjson.gz"

@@ -1,28 +1,9 @@
-"""Pure helpers for ``west zview-gui``: no west, aiohttp or ZView imports."""
+"""Launch helpers shared by ``zview-gui`` and ``west zview-gui``: no aiohttp or ZView."""
 
 import os
-import re
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-REQUIREMENTS = HERE / "requirements.txt"
-SITE = HERE.parent / "target" / "web"
 LIVE_OVERRIDES = ("domain", "elf", "runner", "target", "frequency")
-
-
-def zview_pin(requirements=REQUIREMENTS):
-    """The ZView release the adapter is pinned to, from its requirements file."""
-    match = re.search(r"^zview\s*==\s*([0-9][0-9A-Za-z.+-]*)\s*$",
-                      Path(requirements).read_text(), re.MULTILINE)
-    if match is None:
-        raise ValueError(f"No pinned zview release in {requirements}.")
-    return match.group(1)
-
-
-def site_ready(site=SITE):
-    """The browser site is built: its page and WASM module are both present."""
-    site = Path(site)
-    return (site / "index.html").is_file() and (site / "pkg" / "zview_desktop_bg.wasm").is_file()
 
 
 def heap_period(period, requested):
