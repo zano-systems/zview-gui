@@ -821,8 +821,10 @@ async def check(executable_path=None, screenshot=None):
                 await open_replay(page)
                 await wait_state(page, lambda s: s["status"] == "reading", "replay restart")
                 await click_header(page, primary=True)
-                stopped = await wait_state(page, lambda s: s["status"] == "stopped", "stop")
-                assert stopped["can_open"], stopped
+                # "stopped" can arrive a frame before the reader is released and
+                # Open is enabled again, so wait for both.
+                await wait_state(page, lambda s: s["status"] == "stopped" and s["can_open"],
+                                 "stop and reopen allowed")
                 await open_replay(page)
                 await wait_state(page, lambda s: s["status"] == "ended", "final replay")
                 try:
