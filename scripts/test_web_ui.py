@@ -64,6 +64,7 @@ class WasmOptTests(unittest.TestCase):
             args = json.loads(log.read_text())
             self.assertEqual(args[0], web_ui.WASM_OPT_LEVEL)
             self.assertIn("--enable-bulk-memory", args)
+            self.assertIn("--enable-threads", args)  # the module has atomic instructions
             self.assertIn("--strip-debug", args)
             self.assertEqual(args[-3:], [str(wasm), "-o", str(wasm)])
             self.assertEqual(wasm.stat().st_size, 50)

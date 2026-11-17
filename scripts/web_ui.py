@@ -30,12 +30,15 @@ FONTS = {
 
 
 # wasm-opt (Binaryen) settings for release sites. The features are the ones
-# rustc enables by default for wasm32-unknown-unknown, so the optimizer keeps
-# every instruction the compiler emitted.
+# rustc enables by default for wasm32-unknown-unknown, plus threads: GPUI's
+# dependencies (parking_lot, wasm_thread) emit atomic instructions, which are
+# valid on the module's unshared memory. The optimizer must keep every
+# instruction the compiler emitted, or wasm-opt rejects the module.
 WASM_OPT_LEVEL = "-Os"  # matches the web-release profile's opt-level "s"
 WASM_OPT_FEATURES = (
     "--enable-bulk-memory", "--enable-mutable-globals", "--enable-nontrapping-float-to-int",
     "--enable-sign-ext", "--enable-reference-types", "--enable-multivalue",
+    "--enable-threads",
 )
 
 
