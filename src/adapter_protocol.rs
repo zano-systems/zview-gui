@@ -641,6 +641,11 @@ pub struct ClientState {
 }
 
 impl ClientState {
+    /// Decorative motion follows acquisition health, never socket activity alone.
+    pub fn animate_live_status(&self, fresh_frame: bool, reduce_motion: bool) -> bool {
+        !reduce_motion && self.is_live() && self.indicator(fresh_frame) == SessionIndicator::Healthy
+    }
+
     pub fn indicator(&self, fresh_frame: bool) -> SessionIndicator {
         if self.connection == Connection::Connecting {
             return SessionIndicator::Busy;
@@ -1434,6 +1439,49 @@ mod tests {
         assert!(!labels.join(" ").contains("Last sample"));
         state.accept(live_snapshot("new")).unwrap();
         assert_eq!(state.session.as_ref().unwrap().frames_received, 0);
+    }
+
+    #[test]
+    fn live_status_motion_requires_healthy_live_acquisition_and_motion_permission() {
+        let mut state = ClientState {
+            connection: Connection::Connected,
+            ..Default::default()
+        };
+        assert!(!state.animate_live_status(true, false));
+        state.accept(live_snapshot("live")).unwrap();
+        assert!(!state.animate_live_status(true, false));
+        state.session.as_mut().unwrap().status = Status::Reading;
+        assert!(state.animate_live_status(true, false));
+        assert!(!state.animate_live_status(false, false));
+        assert!(!state.animate_live_status(true, true));
+        state.session.as_mut().unwrap().read_warning = true;
+        assert!(!state.animate_live_status(true, false));
+        state.session.as_mut().unwrap().read_warning = false;
+        state.pending = true;
+        assert!(!state.animate_live_status(true, false));
+        state.pending = false;
+        for connection in [Connection::Connecting, Connection::Retrying] {
+            state.connection = connection;
+            assert!(!state.animate_live_status(true, false));
+        }
+        state.connection = Connection::Connected;
+        for status in [
+            Status::Opening,
+            Status::Stopping,
+            Status::Failed,
+            Status::Lost,
+            Status::Ended,
+            Status::Stopped,
+        ] {
+            state.session.as_mut().unwrap().status = status;
+            assert!(!state.animate_live_status(true, false), "{status:?}");
+        }
+        state.session.as_mut().unwrap().status = Status::Reading;
+        *state.session.as_mut().unwrap().source = Source::Replay {
+            recording: "recording.ndjson.gz".into(),
+        };
+        assert_eq!(state.indicator(true), SessionIndicator::Healthy);
+        assert!(!state.animate_live_status(true, false));
     }
 
     #[test]
