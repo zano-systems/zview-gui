@@ -20,20 +20,37 @@ MCP integration is not implemented.
 
 - Offline snapshot inspection and recorded-session playback.
 - Threads overview and per-thread runtime and stack details.
-- Kernel objects overview with search and type filters.
+- Kernel objects overview with search and type filters. The sidebar hides empty
+  types using live discovery when available, otherwise the selected snapshot.
+  If the selected type becomes empty, the filter returns to All types.
 - Detail views for semaphores, message queues, mutexes, memory slabs,
-  work queues, and heaps.
+  work queues, and heaps. Use the Kernel objects/type breadcrumbs to navigate
+  to a parent list, or Esc to return while preserving the list's search/filter.
+  Clickable breadcrumbs have rounded hover backgrounds and keyboard-focus
+  indicators; current-page labels and separators remain noninteractive.
+- Info icons beside table and detail headings explain sampled measurements and
+  state legends on hover or keyboard focus. Esc dismisses a focused explanation.
+  Current warnings and missing-data notices remain visible.
 - Time-history charts, work queue activity, and captured heap fragmentation maps.
 - One shared Rust UI for native and WebAssembly builds. The browser accepts
   already-decoded JSON without a Python backend. An experimental
   [Python session adapter](web-ui/README.md) streams live target measurements or
   decoded recordings into that browser UI through HTTP commands and WebSocket events.
-- The adapter UI has persistent top-right session controls, with editable
+- The adapter UI has persistent sidebar session controls, with editable
   Live/Replay settings, explicit Connect/Disconnect/Reconnect, and observed live
   samples/s (successful frames received by the adapter). Build directories
   supply board/image/ELF context; Git details are labelled as checkout metadata,
   not proof of the firmware's build revision.
-- Connection actions have labelled icons. A green circle means fresh frames are
+- Adapter sessions show status, icon-only actions, source and Live history cache
+  in the sidebar's bottom panel, rather than occupying the main toolbar.
+  Collapsed sidebars expose the same controls through a session-status popover.
+  Navigation scrolls separately and long session panels scroll on short windows.
+- Adapter sessions show source information in the sidebar rather than repeating
+  it in the footer. Live sessions also show a current-view history cache meter:
+  estimated memory usage/budget and retained duration/time limit. The cache resets
+  on screen changes and is not total application memory. Standalone views retain
+  their footer source/history labels; playback controls remain in the footer.
+- Session actions use icons with tooltips and accessible names. A green circle means fresh frames are
   arriving; busy, waiting/warning, failed and disconnected states have distinct
   indicators and text, not color alone.
 - Opening Live heap details requests one heap's fragmentation map on demand.

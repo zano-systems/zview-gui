@@ -60,14 +60,14 @@ The replay lifecycle tests verify that the installed ZView version matches
 backend pin is intentional.
 
 Open **http://127.0.0.1:8765** in a WebGPU/WebGL2-capable browser with a viewport
-of at least **1000 × 680**. Select **Configure…** in the **top-right session header**
+of at least **1000 × 680**. Select the **Configure session** icon in the **sidebar session panel**
 to open **Session configuration**. On the **Replay** tab, use:
 
 - Recording: `test-data/tests/fixtures/recordings/sys_heap_v4.3.ndjson.gz`
 - Matching ELF: `test-data/tests/fixtures/zephyr.elf`
 
 Choose **Open replay**: 20 frames arrive, the Threads/Heap views update, then
-status becomes `ended`. Use **Stop decoding** in the header before opening
+status becomes `ended`. Use **Stop decoding** in the session panel before opening
 another active session.
 
 For other trusted local captures:
@@ -86,20 +86,38 @@ it does not show adapter controls or start a reconnect loop.
 
 ## Phase 2 — Build-aware session configuration
 
-Session context and actions are in the top-right header on every inspection screen,
-not in the sidebar. They remain visible when the sidebar is collapsed. The header
-shows mode/status, observed progress/rate, the full board target and runner or
-recording filename, and compact project/build context. Long context is truncated;
-hover for source/ELF paths and board/build/Git details. At the minimum width the
-header wraps below navigation without shrinking or hiding its buttons.
+Session context and actions sit below navigation in the left sidebar on every
+inspection screen, freeing the main pane for charts and tables. Status, observed
+progress/rate and right-aligned icon-only actions share a non-wrapping row;
+board/runner or recording context and the ELF path appear below. Long ELF paths
+elide from the beginning. Hover for full source and build details.
+The adapter sidebar is wider than the standalone sidebar to accommodate this panel.
+Navigation scrolls independently; session content is capped at 45% of the viewport
+height and scrolls on short windows. When collapsed, the sidebar offers a labelled
+session-status button that opens the same panel in a keyboard-accessible popover.
+Collapsing the sidebar does not disconnect acquisition or reset history.
 
-**Configure…** (settings icon) opens the draft dialog. One directly accessible
-acquisition action is shown, with a labelled icon: **Connect** (plug) opens a Live
+Acquisition notices appear as dismissible top-right in-app notifications that
+auto-hide after five seconds, rather than expanding the sidebar. Repeated
+identical notices are suppressed; the last notice remains in the diagnostic
+tooltip. Notifications do not repair acquisition or heap-map read failures.
+
+**Configure session** (settings icon) opens the draft dialog. Session actions are
+icon-only, with tooltips and accessible names. One directly accessible
+acquisition action is shown: **Connect** (plug) opens a Live
 draft when no source exists; **Disconnect** (unplug) or **Stop decoding** stops an
 active session; **Reconnect** (circular arrow) reopens a stopped/lost Live source;
 **Open replay** (folder) configures an inactive Replay source. Actions are disabled
 while pending, stopping, or disconnected from the adapter. The configuration
 dialog retains its submit action, but does not duplicate Disconnect/Reconnect.
+
+Live sessions show a muted History cache block in the same sidebar section:
+a memory-usage progress bar, estimated used/budget MiB, and retained seconds/time limit. This
+is the current screen's chart cache, not total process memory; changing screens
+resets it. Older history is discarded at the time or memory limit. Memory-limited
+retention remains a visible warning. The info button provides exact byte counts
+and change count on hover or keyboard focus; Esc dismisses the explanation.
+Standalone history labels and Replay playback controls remain in the footer.
 
 The status indicator uses both shape and text:
 - **Green filled circle:** receiving fresh frames, not merely an open WebSocket.
@@ -111,8 +129,12 @@ The status indicator uses both shape and text:
 A valid new frame clears the transient warning indicator; snapshots retain the
 active warning separately from the historical last-notice text. Freshness expires even
 if no new events arrive; a restored old snapshot cannot turn the light green.
-Stale live rate text is replaced by `— samples/s`. Reduced-motion preferences are
-handled by the shared spinner component. There is no displayed sample-age counter.
+Stale live rate text is replaced by `— samples/s`. While Live is receiving fresh
+frames, a subtle three-second shimmer highlights only the status and sample-rate
+text, not the source description or controls. Waiting, warnings, errors, session
+changes, disconnection and Replay stay static. Shimmer and spinner respect
+reduced-motion preferences; the browser follows `prefers-reduced-motion`,
+including changes while the page is open. There is no displayed sample-age counter.
 
 The dialog has only **Live** and **Replay** tabs:
 
@@ -123,11 +145,32 @@ The dialog has only **Live** and **Replay** tabs:
   discovered ELF; a supplied ELF is an explicit override. It must match the
   recording. The file format still requires an external ELF.
 - **Live:** only the build directory is required. Choosing or typing it
-  automatically previews the board, ELF, debug runner, target and probe clock.
-  **Advanced overrides** optionally enables image/ELF/runner/MCU/GDB-address/clock
-  fields; with it off, only the build directory is submitted.
-  Choosing a different build clears the previous build's overrides.
+  automatically detects the board and fills the image, ELF, debug runner, target
+  and probe-clock inputs. The bordered **Advanced** section starts collapsed;
+  expand its chevron header to edit those fields. Collapsing it does not disable
+  their values. Detection progress and errors remain visible while collapsed.
+  Manual edits, including cleared
+  fields, survive background detection. **Refresh detected settings** resolves
+  from the build directory without overrides and replaces the advanced values
+  only on success; failures keep the existing inputs. The refresh action and its
+  replacement explanation are inside **Advanced**.
+  Choosing a different build clears the previous build's advanced values and
+  detects fresh ones. Reopening Configure restores accepted session settings.
   Detection never opens a probe; **Connect** does, after server-side revalidation.
+- The wider, viewport-constrained dialog shows the detected board as a purple
+  tag instead of repeating the ELF and probe fields outside **Advanced**.
+  **Session discovery** uses dark green tags for discovered groups and muted
+  gray tags for unavailable groups. Tags show just the group name; status is
+  included in accessible labels and tooltips. Hover or focus a tag to see up to
+  ten discovered object names and addresses, with a count of any additional
+  entries. Missing inventory is explicitly distinguished from an empty group.
+  These describe connected firmware capabilities,
+  not the groups currently selected for polling. They appear only while the
+  draft matches that session's effective Live settings; other settings show
+  unknown availability until connected. The info controls beside Live/Replay
+  settings and Session discovery expose static help and waiter-inspection
+  limitations on hover or keyboard focus. Build errors, warnings, missing
+  capabilities, and detection progress remain visible.
 - **Resolve build context** is read-only. It delegates firmware-image and ELF
   resolution to ZView's Python package. `runners.yaml` supplies Live defaults:
   the supported `debug-runner` takes precedence over `flash-runner`, so a Nordic
@@ -173,7 +216,7 @@ so reconnect/reload/other tabs show the same board/build details without
 resolving the filesystem again. Changing a build later does not silently relabel
 an existing session; resolve and open a new one.
 
-For Replay the header shows **decoded frames**, not a recording's sample rate or
+For Replay the session panel shows **decoded frames**, not a recording's sample rate or
 Playing/Paused time. For Live it shows status, board/runner, observed samples/s,
 and project/build context. There is no sample-age line.
 There is no Offline mode in the adapter dialog; legacy desktop
@@ -182,9 +225,9 @@ and static-JSON workflows remain separate and unchanged.
 ## Phase 3 — Live monitoring
 
 1. Start the local adapter with a `--data-root` containing the build and its ELF.
-2. Select **Connect** or **Configure…** in the header, choose **Live**, and select
+2. Select **Connect** or **Configure session** in the sidebar, choose **Live**, and select
    the build directory. No runner, target or ELF entry is needed for a complete build.
-3. Review the automatically detected settings. **Advanced overrides** is only
+3. Review the automatically detected settings. **Advanced** is only
    needed for an explicit alternative, such as an external GDB server address
    that is not recorded in the build. The probe clock is not the frame polling rate.
 4. Select **Connect**. The server resolves the
@@ -209,7 +252,8 @@ guarantee of lossless target sampling: Core's bounded queue can drop frames.
 The browser's redraw rate does not control acquisition.
 
 The active screen selects the live groups and rows read through `Core.select()`.
-Firmware capability notices and wait-queue limitations are shown in the dialog.
+Firmware capability notices remain visible in the dialog; the Session discovery
+info tooltip explains wait-queue limitations.
 Live heap statistics are available when supported. Fragmentation maps are requested
 only while a browser is inspecting a heap, as described in Phase 4 below.
 Unavailable measurements remain unknown, not zero.
@@ -414,7 +458,7 @@ By default, maps follow the polling period with no cooldown (`--period 0.1`,
 zview-gui`; with `--period 0` and no `--heap-period`, maps are captured
 back-to-back too. Values must be finite; frame period/cooldown may be zero.
 Restarting the adapter applies new options; then reconnect the target. Snapshots
-report the effective `timing`, and the header tooltip/map caption show those
+report the effective `timing`, and the session tooltip/map caption show those
 requested values instead of assuming the default rates.
 
 The configured rate is not guaranteed. Reads, serialization, and browser delivery
@@ -609,18 +653,23 @@ For real-browser validation:
 
 Pass `--executable-path /path/to/chrome` to use an existing Chromium browser,
 or `--screenshot /path/to/image.png` to save the final rendered view.
+Use `--sidebar-only` for focused controlled-Live checks of panel placement at
+normal, minimum and short-window sizes, collapsed mouse/keyboard access,
+history preservation, and Configure/Disconnect/Reconnect actions.
 
 The smoke test loads the actual GPUI WASM bundle. It calls the Rust replay command
 functions and inspects a read-only Rust state export (`adapter_state`), since
 canvas-drawn rows have no DOM table. It also uses real canvas mouse/keyboard
-events at fixed viewports for header/dialog controls. It verifies 20 decoded
+events at fixed viewports for sidebar/dialog controls. It verifies 20 decoded
 frames, thread count/CPU, two-tab snapshots, reconnect/reload, failure/retry,
 stop/restart, build resolution, keyboard apply/cancel, a late cancelled resolver
 response, controls with the sidebar collapsed, keyboard mode tabs, and the minimum viewport.
-Live controls use a controlled acquisition worker (not hardware) and real header
+Live controls use a controlled acquisition worker (not hardware) and real sidebar
 clicks for Disconnect/Reconnect. Checks include spinner/green/amber/red/gray
 transitions, stale-frame expiry even with a connected socket, old snapshot recovery,
-bounded history, and controls on both Threads and Kernel objects.
+bounded history, and controls on both Threads and Kernel objects. Live-status
+shimmer checks cover healthy/stalled/warning/failed/stopped states and both
+initial and dynamically changed browser reduced-motion preferences.
 Native-picker bridge tests replace only the OS-dialog boundary with scripted
 responses: the actual Rust buttons, HTTP route, validation and draft updates run.
 They cover all three selections, cancellation, out-of-root rejection and late
