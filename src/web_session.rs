@@ -365,19 +365,16 @@ impl ThreadsApp {
         } else {
             labels[0].clone()
         };
-        let mut tooltip = labels.join("\n");
-        tooltip.push_str("\nGreen: receiving frames. Amber: waiting for frames or a read warning. Red: acquisition failed. Gray: inactive or adapter disconnected.");
+        let mut tooltip = format!("{status}\n{}", labels[2]);
         if indicator == SessionIndicator::Waiting {
             tooltip.push_str("\nNo fresh frame received within the five-second freshness window.");
         }
         if let Some(session) = &state.session {
-            tooltip.push_str(&format!(
-                "\nSource: {}\nELF: {}",
-                session.source_label(),
-                session.elf
-            ));
             if let Some(context) = &session.context {
-                tooltip.push_str(&format!("\n{}", context.tooltip()));
+                tooltip.push_str(&format!(
+                    "\nBuild: {}\nFirmware image: {}",
+                    context.build_dir, context.domain
+                ));
             }
             if let Some(notice) = &session.last_notice {
                 tooltip.push_str(&format!("\nLast acquisition notice: {notice}"));
@@ -393,7 +390,7 @@ impl ThreadsApp {
                         timing.heap_label()
                     ));
                 }
-                tooltip.push_str("\nObserved samples/s counts successful frames received by the adapter over up to 5 seconds, before browser delivery; it is not lossless board acquisition.");
+                tooltip.push_str("\nRate: successful adapter frames over up to 5 seconds, not lossless target acquisition.");
             } else {
                 tooltip.push_str("\nDecode progress is not the original recording's sample rate.");
             }
@@ -464,7 +461,6 @@ impl ThreadsApp {
                         .flex()
                         .flex_col()
                         .gap_1()
-                        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
                         .child(
                             div()
                                 .flex()
@@ -564,7 +560,9 @@ impl ThreadsApp {
                         })),
                         ),
                         )
-                        .child(layout::note("session-header-board", labels[1].clone()).w_full())
+                        .child(div().flex().items_center().gap_1().min_w_0()
+                            .child(layout::note("session-header-board", labels[1].clone()).flex_1().flex_shrink_1())
+                            .child(layout::info("session-diagnostics-info", "Session diagnostics", tooltip)))
                         .child(layout::note("session-header-source",
                             state.session.as_ref().map(|s| s.elf.clone()).unwrap_or_else(|| labels[3].clone()))
                             .w_full()
