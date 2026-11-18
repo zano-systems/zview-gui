@@ -124,11 +124,15 @@ impl Render for InfoState {
             .track_focus(&self.focus)
             .tab_stop(true)
             .key_context("ScreenInfo")
-            .role(Role::Button)
             .aria_label(self.label.clone())
             .aria_description(self.text.clone())
-            .cursor_pointer()
-            .when(self.tag.is_none(), |el| el.size_6())
+            .when(self.tag.is_none(), |el| {
+                el.size_6()
+                    .on_mouse_down(MouseButton::Left, |_, window, _| {
+                        // Keep keyboard focus support without click-to-focus help.
+                        window.prevent_default();
+                    })
+            })
             .flex_shrink_0()
             .flex()
             .items_center()
@@ -137,13 +141,17 @@ impl Render for InfoState {
             .text_color(rgb(MUTED))
             .border_1()
             .border_color(gpui_kit::transparent_black())
-            .hover(|style| style.bg(rgb(crate::CARD)))
             .focus_visible(|style| style.border_color(rgb(crate::PURPLE)))
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.dismissed = false;
-                this.focus.focus(window, cx);
-                cx.notify();
-            }))
+            .when(self.tag.is_some(), |el| {
+                el.role(Role::Button)
+                    .cursor_pointer()
+                    .hover(|style| style.bg(rgb(crate::CARD)))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.dismissed = false;
+                        this.focus.focus(window, cx);
+                        cx.notify();
+                    }))
+            })
             .on_action(cx.listener(|this, _: &crate::DismissScreenInfo, _, cx| {
                 this.dismissed = true;
                 cx.stop_propagation();
