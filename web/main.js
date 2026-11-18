@@ -1,4 +1,4 @@
-import init, { start, load_json, show_file_error, connect_adapter } from "./pkg/zview_desktop.js";
+import init, { start, load_json, show_file_error, connect_adapter, set_reduced_motion } from "./pkg/zview_desktop.js";
 import { createDocumentLoader } from "./documents.mjs";
 
 const status = document.querySelector("#status");
@@ -55,6 +55,11 @@ try {
       60000,
     )),
   ]);
+
+  // Kit reads desktop preferences; the browser host supplies its media query.
+  const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  set_reduced_motion(motion.matches);
+  motion.addEventListener("change", event => set_reduced_motion(event.matches));
 
   // The window is usable now, even if the initial JSON is still being fetched.
   // Recoverable load errors must not restore the startup overlay over its menu.

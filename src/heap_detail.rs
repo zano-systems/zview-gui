@@ -4,7 +4,7 @@ use crate::{
     model::{self, ChartSeries, Frame, HeapKey},
     time_series_chart::TimeSeriesChart,
 };
-use gpui_kit::component::{StyledExt, button::Button, progress::Progress, tooltip::Tooltip};
+use gpui_kit::component::{StyledExt, progress::Progress, tooltip::Tooltip};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
@@ -98,11 +98,10 @@ impl ThreadsApp {
         div().id("heap-detail").debug_selector(|| "heap-detail".into())
             .flex().flex_col().flex_1().min_h_0().gap_3()
             .when(self.frames[self.frame].is_live, |el| el.gap_2())
-            .child(div().flex().flex_shrink_0().items_center().justify_between().flex_wrap().gap_3()
+            .child(div().flex_shrink_0().flex().items_center().gap_2()
                 .child(div().text_lg().font_semibold().child("Heap details"))
-                .child(div().debug_selector(|| "back-to-objects".into()).child(
-                    Button::new("back-to-objects").label("Back to Kernel objects")
-                        .on_click(cx.listener(|this, _, window, cx| this.show_kernel_objects(this.object_kind, window, cx))))))
+                .child(crate::layout::info("heap-info", "About heap measurements",
+                    "Sampled allocator state, not individual allocation/free events. Peak is target-reported, not reconstructed. Declaration location and absolute chunk addresses are not available in the dump.")))
             .when(heap.is_none(), |el| el.child(div().debug_selector(|| "heap-absent".into())
                 .p_2().flex_shrink_0().child(crate::layout::note("heap-absent-note",
                     "This heap is not present in the selected frame. Current values are not carried forward."))))
@@ -145,8 +144,6 @@ impl ThreadsApp {
                     .border_color(rgb(BORDER)).bg(rgb(CARD)).flex().flex_col().gap_2()
                     .child(div().text_sm().font_semibold().child("Waiting threads"))
                     .child(crate::wait_queue::threads("heap", waiters, crate::wait_queue::Layout::Vertical))))
-            .child(crate::layout::note("heap-note",
-                "Sampled allocator state, not individual allocation/free events. Peak is target-reported, not reconstructed. Declaration location and absolute chunk addresses are not available in the dump."))
     }
 }
 

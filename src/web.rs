@@ -67,6 +67,15 @@ pub async fn start(ui_font: Vec<u8>, mono_font: Vec<u8>) -> Result<(), JsValue> 
         .map_err(|_| JsValue::from_str("Browser window initialization failed."))
 }
 
+/// Follow the browser accessibility preference, including changes while running.
+#[wasm_bindgen]
+pub fn set_reduced_motion(reduce: bool) -> Result<(), JsValue> {
+    update_view(|_, _, cx| {
+        cx.set_reduce_motion(reduce);
+        cx.notify();
+    })
+}
+
 /// Install browser-provided text without introducing filesystem access.
 /// Invalid input leaves the previous frames and selection visible.
 #[wasm_bindgen]

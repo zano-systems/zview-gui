@@ -13,6 +13,31 @@ mod session_tests;
 mod workq_activity_tests;
 
 #[gpui_kit::test]
+fn standalone_footer_keeps_source_and_playback_or_live_history(cx: &mut TestAppContext) {
+    let (app, mut cx) = setup(cx);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds("session-source").is_some());
+    for control in [
+        "previous",
+        "play-pause",
+        "reset-playback",
+        "playback-status",
+    ] {
+        assert!(cx.debug_bounds(control).is_some(), "{control}");
+    }
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.frames[app.frame].is_live = true;
+            cx.notify();
+        });
+        window.draw(cx).clear(cx);
+    });
+    assert!(cx.debug_bounds("session-source").is_some());
+    assert!(cx.debug_bounds("live-history-status").is_some());
+    assert!(cx.debug_bounds("play-pause").is_none());
+}
+
+#[gpui_kit::test]
 fn live_charts_use_wheel_and_reset_without_a_footer_slider(cx: &mut TestAppContext) {
     let (app, mut cx) = setup(cx);
     cx.update(|window, cx| {
@@ -430,8 +455,7 @@ fn heap_detail_navigation_preserves_session_and_handles_absence(cx: &mut TestApp
     cx.simulate_click(next, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert_missing_notice(&app, &mut cx, false);
-    // Let the removed warning finish its exit animation before clicking the
-    // Back button in the same top-right region.
+    // Let the removed warning finish its exit animation before navigating.
     cx.executor()
         .advance_clock(std::time::Duration::from_secs(1));
     cx.run_until_parked();
@@ -445,11 +469,11 @@ fn heap_detail_navigation_preserves_session_and_handles_absence(cx: &mut TestApp
     let row = cx.debug_bounds("kernel-row-Heap-4096").unwrap().center();
     cx.simulate_click(row, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let back = cx.debug_bounds("back-to-objects").unwrap().center();
-    cx.simulate_click(back, Modifiers::default());
+    let breadcrumb = cx.debug_bounds("object-type-breadcrumb").unwrap().center();
+    cx.simulate_click(breadcrumb, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     app.read_with(&cx, |app, _| {
-        assert_eq!(app.screen, Screen::KernelObjects, "Back at {back:?}");
+        assert_eq!(app.screen, Screen::KernelObjects);
         assert_eq!(app.frame, 4);
     });
 }
@@ -533,7 +557,8 @@ fn controls_and_popup_use_the_app_palette(cx: &mut TestAppContext) {
         );
         window.draw(cx).clear(cx);
     });
-    assert!(cx.debug_bounds("thread-activity-legend").is_some());
+    assert!(cx.debug_bounds("thread-activity-info").is_some());
+    assert!(cx.debug_bounds("thread-activity-legend").is_none());
     let heap = cx.debug_bounds("heap-selector").unwrap().center();
     cx.simulate_click(heap, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -1138,8 +1163,7 @@ fn workq_detail_preserves_session_and_handles_partial_absent_and_narrow_frames(
     assert!(drain.left() >= pending.right());
     assert!((history.size.width - 3. * pending.size.width).abs() <= px(2.));
     assert!(cx.debug_bounds("workq-pending-tag-0").is_some());
-    let back = cx.debug_bounds("back-to-objects").unwrap().center();
-    cx.simulate_click(back, Modifiers::default());
+    cx.simulate_keystrokes("escape");
     cx.update(|window, cx| window.draw(cx).clear(cx));
     app.read_with(&cx, |app, _| assert_eq!(app.screen, Screen::KernelObjects));
     cx.simulate_keystrokes("tab tab enter");
@@ -1379,8 +1403,7 @@ fn mutex_detail_navigation_history_and_partial_data(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("tab tab enter");
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(cx.debug_bounds("mutex-detail").is_some());
-    let back = cx.debug_bounds("back-to-objects").unwrap().center();
-    cx.simulate_click(back, Modifiers::default());
+    cx.simulate_keystrokes("escape");
     cx.simulate_keystrokes("tab tab enter");
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let breadcrumb = cx.debug_bounds("objects-breadcrumb").unwrap().center();
@@ -1715,6 +1738,167 @@ fn single_click_and_return_controls_render_the_right_screen(cx: &mut TestAppCont
 }
 
 #[gpui_kit::test]
+fn breadcrumb_links_paint_hover_and_focus_and_support_keyboard_activation(cx: &mut TestAppContext) {
+    for width in [1480., 1000.] {
+        let (app, mut cx) = setup(cx);
+        cx.simulate_resize(size(px(width), px(680.)));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.selected = Some(536871096);
+                app.open_selected(&super::OpenThread, window, cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert_breadcrumb_hover(&mut cx, "threads-breadcrumb");
+        activate_breadcrumb_with_keyboard(&mut cx, "threads-breadcrumb", "enter");
+        app.read_with(&cx, |app, _| assert_eq!(app.screen, Screen::Overview));
+
+        open_kernel_objects(&app, &mut cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.frame = 0;
+                app.sync_heaps(window, cx);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let row = cx.debug_bounds("kernel-row-Heap-4096").unwrap().center();
+        cx.simulate_click(row, Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_breadcrumb_hover(&mut cx, "objects-breadcrumb");
+        assert_breadcrumb_hover(&mut cx, "object-type-breadcrumb");
+        activate_breadcrumb_with_keyboard(&mut cx, "object-type-breadcrumb", "space");
+        app.read_with(&cx, |app, _| {
+            assert_eq!(app.screen, Screen::KernelObjects);
+            assert_eq!(app.object_kind, Some(super::kernel_model::Kind::Heap));
+        });
+        activate_breadcrumb_with_keyboard(&mut cx, "objects-breadcrumb", "enter");
+        app.read_with(&cx, |app, _| assert_eq!(app.object_kind, None));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.show_overview(window, cx));
+            window.draw(cx).clear(cx);
+        });
+    }
+}
+
+fn assert_breadcrumb_hover(cx: &mut VisualTestContext, selector: &'static str) {
+    let bounds = cx.debug_bounds(selector).unwrap();
+    // Inspect paint rather than just checking that a button occupies space.
+    let has_surface = |window: &gpui::Window| {
+        let bounds = bounds.scale(window.scale_factor());
+        window.painted_quads().iter().any(|quad| {
+            quad.bounds == bounds
+                && !quad.background.is_transparent()
+                && quad.corner_radii.top_left > gpui::ScaledPixels::default()
+                && quad.corner_radii.bottom_right > gpui::ScaledPixels::default()
+        })
+    };
+    cx.update(|window, cx| {
+        window.simulate_mouse_move(gpui::point(px(0.), px(0.)), cx);
+        window.draw(cx).clear(cx);
+        assert!(!has_surface(window), "{selector} should be quiet at rest");
+        window.simulate_mouse_move(bounds.center(), cx);
+        window.draw(cx).clear(cx);
+        assert!(
+            has_surface(window),
+            "{selector} needs a rounded hover surface"
+        );
+    });
+    assert_eq!(
+        cx.debug_bounds(selector).unwrap(),
+        bounds,
+        "hover must not shift layout"
+    );
+}
+
+fn activate_breadcrumb_with_keyboard(
+    cx: &mut VisualTestContext,
+    selector: &'static str,
+    key: &str,
+) {
+    cx.update(|window, cx| {
+        window.simulate_mouse_move(gpui::point(px(0.), px(0.)), cx);
+        window.blur(cx);
+        window.draw(cx).clear(cx);
+    });
+    for _ in 0..64 {
+        let bounds = cx.debug_bounds(selector).unwrap();
+        let focused = cx.update(|window, cx| {
+            window.focus_next(cx);
+            window.draw(cx).clear(cx);
+            let bounds = bounds.scale(window.scale_factor());
+            let tolerance = px(8.).scale(window.scale_factor());
+            window.painted_quads().iter().any(|quad| {
+                quad.bounds.contains(&bounds.center())
+                    && quad.bounds.size.width >= bounds.size.width - tolerance
+                    && quad.bounds.size.width <= bounds.size.width + tolerance
+                    && quad.bounds.size.height >= bounds.size.height - tolerance
+                    && quad.bounds.size.height <= bounds.size.height + tolerance
+                    && !quad.border_color.is_transparent()
+                    && quad.border_widths.top > gpui::ScaledPixels::default()
+                    && quad.corner_radii.top_left > gpui::ScaledPixels::default()
+            })
+        });
+        if focused {
+            let keystroke = gpui::Keystroke::parse(key).unwrap();
+            cx.simulate_event(gpui::KeyDownEvent {
+                keystroke: keystroke.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            });
+            cx.simulate_event(gpui::KeyUpEvent { keystroke });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            return;
+        }
+    }
+    panic!("{selector} must be reachable with Tab and paint a rounded focus indicator");
+}
+
+#[gpui_kit::test]
+fn sidebar_brand_stays_centered_and_contained(cx: &mut TestAppContext) {
+    let (app, mut cx) = setup(cx);
+    for width in [1480., 1000.] {
+        cx.simulate_resize(size(px(width), px(680.)));
+        for collapsed in [false, true, false] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.collapsed = collapsed;
+                    cx.notify();
+                });
+                window.draw(cx).clear(cx);
+            });
+            // Let the sidebar finish its width transition before measuring.
+            cx.executor()
+                .advance_clock(std::time::Duration::from_secs(1));
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let header = cx.debug_bounds("sidebar-brand-header").unwrap();
+            let row = cx.debug_bounds("sidebar-brand-row").unwrap();
+            let mark = cx.debug_bounds("sidebar-brand-mark").unwrap();
+            assert_eq!(mark.size.width, px(if collapsed { 28. } else { 36. }));
+            assert_eq!(mark.size.height, mark.size.width);
+            assert!(mark.left() >= header.left() && mark.right() <= header.right());
+            assert!(mark.top() >= header.top() && mark.bottom() <= header.bottom());
+            let group_right = if collapsed {
+                assert!(cx.debug_bounds("sidebar-brand-text").is_none());
+                mark.right()
+            } else {
+                let text = cx.debug_bounds("sidebar-brand-text").unwrap();
+                let subtitle = cx.debug_bounds("sidebar-brand-subtitle").unwrap();
+                assert!(text.left() >= mark.right() + px(8.));
+                assert!(text.right() <= header.right());
+                assert!(subtitle.left() >= text.left() && subtitle.right() <= text.right());
+                assert!((text.center().y - mark.center().y).abs() <= px(1.));
+                text.right()
+            };
+            let left_space = mark.left() - row.left();
+            let right_space = row.right() - group_right;
+            assert!((left_space - right_space).abs() <= px(1.));
+        }
+    }
+}
+
+#[gpui_kit::test]
 fn breadcrumbs_follow_every_kernel_route_and_type_filter(cx: &mut TestAppContext) {
     use super::kernel_model::Kind;
 
@@ -1765,6 +1949,7 @@ fn breadcrumbs_follow_every_kernel_route_and_type_filter(cx: &mut TestAppContext
                 assert!(bounds.top() >= px(0.) && bounds.bottom() <= px(940.));
             }
             assert!(cx.debug_bounds("threads-breadcrumb").is_none());
+            assert!(cx.debug_bounds("back-to-objects").is_none());
 
             // Keep the route even when a later frame no longer contains the object.
             cx.update(|window, cx| {
@@ -1786,17 +1971,24 @@ fn breadcrumbs_follow_every_kernel_route_and_type_filter(cx: &mut TestAppContext
             cx.update(|window, cx| window.draw(cx).clear(cx));
             app.read_with(&cx, |app, cx| {
                 assert_eq!(app.screen, Screen::KernelObjects);
-                assert_eq!(app.object_kind, Some(kind));
+                assert_eq!(
+                    app.object_kind,
+                    (app.object_count(Some(kind)) > 0).then_some(kind)
+                );
                 assert_eq!(app.frame, 1);
                 assert_eq!(app.heap.read(cx).selected_value(), heap.as_ref());
                 assert!(app.object_search.read(cx).value().is_empty());
             });
-            assert!(cx.debug_bounds("object-type-breadcrumb").is_some());
+            assert_eq!(
+                cx.debug_bounds("object-type-breadcrumb").is_some(),
+                app.read_with(&cx, |app, _| app.object_kind.is_some())
+            );
             assert!(cx.debug_bounds("breadcrumb-current").is_none());
 
             // Kernel objects is also a parent link on every type-filtered list.
-            let breadcrumb = cx.debug_bounds("objects-breadcrumb").unwrap().center();
-            cx.simulate_click(breadcrumb, Modifiers::default());
+            if let Some(breadcrumb) = cx.debug_bounds("objects-breadcrumb") {
+                cx.simulate_click(breadcrumb.center(), Modifiers::default());
+            }
             cx.update(|window, cx| window.draw(cx).clear(cx));
             app.read_with(&cx, |app, _| {
                 assert_eq!(app.screen, Screen::KernelObjects);
@@ -2045,8 +2237,10 @@ fn kernel_sidebar_search_filter_and_shared_frame_navigation(cx: &mut TestAppCont
         app.update(cx, |app, cx| app.step(true, window, cx));
         window.draw(cx).clear(cx);
     });
-    assert!(cx.debug_bounds("kernel-empty").is_some());
+    assert!(cx.debug_bounds("kernel-empty").is_none());
     assert!(cx.debug_bounds("kernel-row-Mutex-12288").is_none());
+    assert!(cx.debug_bounds("kernel-row-Semaphore-8192").is_some());
+    app.read_with(&cx, |app, _| assert_eq!(app.object_kind, None));
     assert!(cx.debug_bounds("kernel-summary").is_some());
     cx.update(|window, cx| {
         app.update(cx, |app, cx| {
@@ -2208,7 +2402,7 @@ fn sidebar_type_choices_filter_without_changing_session(cx: &mut TestAppContext)
 }
 
 #[gpui_kit::test]
-fn sidebar_type_selection_survives_collapse_navigation_and_empty_types(cx: &mut TestAppContext) {
+fn sidebar_type_selection_survives_navigation_but_resets_when_empty(cx: &mut TestAppContext) {
     use super::kernel_model::Kind;
     let (app, mut cx) = setup(cx);
     open_kernel_objects(&app, &mut cx);
@@ -2233,17 +2427,20 @@ fn sidebar_type_selection_survives_collapse_navigation_and_empty_types(cx: &mut 
         app.update(cx, |app, cx| app.step(true, window, cx));
         window.draw(cx).clear(cx);
     });
-    assert!(cx.debug_bounds("kernel-empty").is_some());
-    // Empty types stay available so a later frame can populate them.
-    assert!(cx.debug_bounds("object-type-Work queue").is_some());
-    let all = cx.debug_bounds("object-type-all").unwrap().center();
-    cx.simulate_click(all, Modifiers::default());
-    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds("kernel-empty").is_none());
+    assert!(cx.debug_bounds("object-type-Work queue").is_none());
+    assert!(cx.debug_bounds("object-type-all").is_some());
     assert!(cx.debug_bounds("kernel-row-Semaphore-8192").is_some());
     app.read_with(&cx, |app, _| {
         assert_eq!(app.object_kind, None);
         assert_eq!(app.frame, 1);
     });
+    // Returning to a populated frame restores the choice, not the old filter.
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| app.step(false, window, cx));
+        window.draw(cx).clear(cx);
+    });
+    app.read_with(&cx, |app, _| assert_eq!(app.object_kind, None));
     let work = cx.debug_bounds("object-type-Work queue").unwrap().center();
     cx.simulate_click(work, Modifiers::default());
     cx.update(|window, cx| {
@@ -2254,7 +2451,7 @@ fn sidebar_type_selection_survives_collapse_navigation_and_empty_types(cx: &mut 
         window.draw(cx).clear(cx);
     });
     assert!(cx.debug_bounds("object-type-Work queue").is_none());
-    assert!(cx.debug_bounds("kernel-empty").is_some());
+    assert!(cx.debug_bounds("kernel-empty").is_none());
     cx.update(|window, cx| {
         app.update(cx, |app, cx| {
             app.collapsed = false;
@@ -2265,8 +2462,78 @@ fn sidebar_type_selection_survives_collapse_navigation_and_empty_types(cx: &mut 
     assert!(cx.debug_bounds("object-type-Work queue").is_some());
     app.read_with(&cx, |app, _| {
         assert_eq!(app.object_kind, Some(Kind::WorkQueue));
-        assert_eq!(app.frame, 1);
+        assert_eq!(app.frame, 0);
     });
+}
+
+#[test]
+fn object_counts_prefer_discovery_over_view_specific_frames() {
+    use super::{adapter_protocol::HeapIdentity, kernel_model::Kind, object_count};
+    use std::collections::BTreeMap;
+
+    let frame = &super::model::parse(include_str!("../sample.json")).unwrap()[0];
+    let identity = HeapIdentity {
+        address: 42,
+        name: "discovered".into(),
+    };
+    let inventory = BTreeMap::from([
+        ("threads".into(), vec![identity.clone(); 5]),
+        ("semaphores".into(), vec![identity.clone(); 2]),
+        ("workqs".into(), vec![identity]),
+    ]);
+    assert_eq!(object_count(frame, Some(&inventory), None), 3);
+    assert_eq!(
+        object_count(frame, Some(&inventory), Some(Kind::WorkQueue)),
+        1
+    );
+    assert_eq!(object_count(frame, Some(&inventory), Some(Kind::Heap)), 0);
+    assert_eq!(
+        object_count(frame, None, Some(Kind::Heap)),
+        frame.heaps.len()
+    );
+    assert_eq!(
+        object_count(frame, None, None),
+        super::kernel_model::rows(frame).len()
+    );
+    // An explicitly empty inventory is authoritative, not a fallback.
+    assert_eq!(object_count(frame, Some(&BTreeMap::new()), None), 0);
+}
+
+#[gpui_kit::test]
+fn sidebar_visibility_ignores_search_and_keeps_empty_session_navigation(cx: &mut TestAppContext) {
+    let (app, mut cx) = setup(cx);
+    open_kernel_objects(&app, &mut cx);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.object_search.update(cx, |input, cx| {
+                input.set_value("no-matching-object", window, cx)
+            });
+        });
+        window.draw(cx).clear(cx);
+    });
+    assert!(cx.debug_bounds("kernel-empty").is_some());
+    for kind in super::kernel_model::Kind::ALL {
+        let selector = Box::leak(format!("object-type-{}", kind.label()).into_boxed_str());
+        assert!(cx.debug_bounds(selector).is_some());
+    }
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            // Installing a new session must also reconcile a previous filter.
+            app.object_kind = Some(super::kernel_model::Kind::Heap);
+            let frames = super::model::parse(r#"{"threads":[]}"#).unwrap();
+            app.install(frames, "empty.json".into(), None, window, cx);
+            app.show_kernel_objects(app.object_kind, window, cx);
+        });
+        window.draw(cx).clear(cx);
+    });
+    app.read_with(&cx, |app, _| assert_eq!(app.object_kind, None));
+    assert!(cx.debug_bounds("kernel-navigation").is_some());
+    assert!(cx.debug_bounds("object-type-all").is_some());
+    assert!(cx.debug_bounds("kernel-empty").is_some());
+    for kind in super::kernel_model::Kind::ALL {
+        let selector = Box::leak(format!("object-type-{}", kind.label()).into_boxed_str());
+        assert!(cx.debug_bounds(selector).is_none());
+    }
 }
 
 #[gpui_kit::test]
@@ -2351,17 +2618,21 @@ fn slab_detail_navigation_preserves_session_and_filters(cx: &mut TestAppContext)
     app.read_with(&cx, |app, cx| {
         assert_eq!(app.heap.read(cx).selected_value(), heap.as_ref())
     });
-    for control in ["back-to-objects", "objects-breadcrumb"] {
-        let back = cx.debug_bounds(control).unwrap().center();
-        cx.simulate_click(back, Modifiers::default());
+    for preserve_filters in [true, false] {
+        if preserve_filters {
+            cx.simulate_keystrokes("escape");
+        } else {
+            let breadcrumb = cx.debug_bounds("objects-breadcrumb").unwrap().center();
+            cx.simulate_click(breadcrumb, Modifiers::default());
+        }
         cx.update(|window, cx| window.draw(cx).clear(cx));
         app.read_with(&cx, |app, cx| {
             assert_eq!(app.screen, Screen::KernelObjects);
-            if control == "back-to-objects" {
-                assert_eq!(app.object_kind, Some(super::kernel_model::Kind::MemorySlab));
+            // Visiting the empty frame cleared the type, but not the search.
+            assert_eq!(app.object_kind, None);
+            if preserve_filters {
                 assert_eq!(app.object_search.read(cx).value().as_str(), "slab");
             } else {
-                assert_eq!(app.object_kind, None);
                 assert!(app.object_search.read(cx).value().is_empty());
             }
             assert_eq!(app.frame, 0);
@@ -2526,7 +2797,7 @@ fn semaphore_area_demo_keeps_summary_wait_queue_and_responsive_layout(cx: &mut T
     app.read_with(&cx, |app, _| {
         assert_eq!(app.screen, Screen::KernelObjects);
         assert_eq!(app.frame, 12);
-        assert_eq!(app.object_kind, Some(super::kernel_model::Kind::Semaphore));
+        assert_eq!(app.object_kind, None);
     });
 }
 
@@ -2558,8 +2829,7 @@ fn semaphore_detail_navigation_preserves_filters_frame_and_heap(cx: &mut TestApp
         assert_eq!(app.frame, 0);
         assert_eq!(app.heap.read(cx).selected_value(), heap.as_ref());
     });
-    let back = cx.debug_bounds("back-to-objects").unwrap().center();
-    cx.simulate_click(back, Modifiers::default());
+    cx.simulate_keystrokes("escape");
     cx.update(|window, cx| window.draw(cx).clear(cx));
     app.read_with(&cx, |app, cx| {
         assert_eq!(app.screen, Screen::KernelObjects);
@@ -2676,10 +2946,7 @@ fn message_queue_detail_click_keyboard_and_return_preserve_session(cx: &mut Test
     cx.simulate_keystrokes("escape");
     app.read_with(&cx, |app, cx| {
         assert_eq!(app.screen, Screen::KernelObjects);
-        assert_eq!(
-            app.object_kind,
-            Some(super::kernel_model::Kind::MessageQueue)
-        );
+        assert_eq!(app.object_kind, None);
         assert_eq!(app.object_search.read(cx).value().as_str(), "mess");
         assert_eq!(app.frame, 1);
     });
@@ -2690,8 +2957,7 @@ fn message_queue_detail_click_keyboard_and_return_preserve_session(cx: &mut Test
     cx.simulate_keystrokes("tab tab enter");
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(cx.debug_bounds("msgq-detail").is_some());
-    let back = cx.debug_bounds("back-to-objects").unwrap().center();
-    cx.simulate_click(back, Modifiers::default());
+    cx.simulate_keystrokes("escape");
     cx.simulate_keystrokes("tab tab enter");
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(cx.debug_bounds("msgq-detail").is_some());

@@ -4,7 +4,7 @@ use crate::{
     model::{self, ChartSeries, Frame},
     time_series_chart::TimeSeriesChart,
 };
-use gpui_kit::component::{StyledExt, button::Button, progress::Progress};
+use gpui_kit::component::{StyledExt, progress::Progress};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
@@ -85,13 +85,7 @@ impl ThreadsApp {
         };
         div().id("slab-detail").debug_selector(|| "slab-detail".into())
             .flex().flex_col().flex_1().min_h_0().gap_3()
-            .child(div().flex().flex_shrink_0().items_center().justify_between().flex_wrap().gap_3()
-                .child(div().text_lg().font_semibold().child("Memory slab details"))
-                .child(div().debug_selector(|| "back-to-objects".into()).child(
-                    Button::new("back-to-objects").label("Back to Kernel objects")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.show_kernel_objects(this.object_kind, window, cx);
-                        })))))
+            .child(div().flex_shrink_0().text_lg().font_semibold().child("Memory slab details"))
             .when(slab.is_none(), |el| el.child(
                 div().debug_selector(|| "slab-absent".into()).p_2().flex_shrink_0().rounded_lg()
                     .border_1().border_color(rgb(BORDER)).child(crate::layout::note("slab-absent-note",
@@ -124,7 +118,10 @@ impl ThreadsApp {
             .child(div().flex().flex_1().min_h_0().gap_3()
                 .child(div().debug_selector(|| "slab-history".into()).flex_1().min_w_0().min_h_0()
                     .p_3().rounded_lg().border_1().border_color(rgb(BORDER)).bg(rgb(CARD)).flex().flex_col().gap_2()
-                    .child(div().text_sm().font_semibold().child("Blocks in use"))
+                    .child(div().flex().items_center().gap_2()
+                        .child(div().text_sm().font_semibold().child("Blocks in use"))
+                        .child(crate::layout::info("slab-info", "About memory slab history",
+                            "Sampled block counts, not individual allocation/free events. Peak is the target-reported high-water mark when tracked. Missing readings break the history line.")))
                     .child(div().text_xs().text_color(rgb(MUTED)).child(scale))
                     .child(div().debug_selector(|| "slab-usage-plot".into()).flex_1().min_h_0()
                         .child(TimeSeriesChart::count("slab-usage", series, rgb(color).into(), maximum)))
@@ -133,8 +130,6 @@ impl ThreadsApp {
                     .p_3().rounded_lg().border_1().border_color(rgb(BORDER)).bg(rgb(CARD)).flex().flex_col().gap_2()
                     .child(div().text_sm().font_semibold().child("Waiting threads"))
                     .child(crate::wait_queue::threads("slab", waiters, crate::wait_queue::Layout::Vertical))))
-            .child(crate::layout::note("slab-note",
-                "Sampled block counts, not individual allocation/free events. Peak is the target-reported high-water mark when tracked. Missing readings break the history line."))
     }
 }
 

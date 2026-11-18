@@ -35,7 +35,7 @@ impl ThreadsApp {
             .iter()
             .filter(|row| row.matches(kind, &query))
             .collect::<Vec<_>>();
-        let total = self.object_inventory_count(None).unwrap_or(rows.len());
+        let total = self.object_count(None);
         div()
             .id("kernel-objects")
             .debug_selector(|| "kernel-objects".into())
@@ -46,10 +46,11 @@ impl ThreadsApp {
             .flex_1()
             .min_h_0()
             .gap_3()
-            .child(div().flex_shrink_0().text_2xl().font_semibold().child("Kernel objects"))
-            .child(crate::layout::note("kernel-description",
-                "Statically declared objects · state and wait queues at the selected frame",
-            ))
+            .child(div().flex_shrink_0().flex().items_center().gap_2()
+                .child(div().text_2xl().font_semibold()
+                    .child(kind.map(|kind| kind.label()).unwrap_or("Kernel objects")))
+                .child(crate::layout::info("kernel-objects-info", "About kernel objects",
+                    "Statically declared objects: state and wait queues at the selected frame.\n\nUnknown wait queues are labelled unavailable. Amber: waiting / locked. Red: full, exhausted, contended, draining or plugged.\n\nBars represent each type’s state or capacity, not comparable utilization.")))
             .child(
                 div().debug_selector(|| "kernel-table-toolbar".into())
                     .w_full().min_w_0().flex().flex_shrink_0().items_center().justify_between().flex_wrap().gap_3().text_sm()
@@ -101,11 +102,8 @@ impl ThreadsApp {
                             })),
                     ),
             )
-            .child(crate::layout::note("kernel-state-legend",
-                "Unknown wait queues are labelled unavailable · amber waiting / locked · red full, exhausted, contended, draining or plugged",
-            ))
             .child(crate::layout::note("kernel-interaction-legend",
-                "Bars represent each type’s state or capacity, not comparable utilization. Click an object, or focus its row with Tab and press Enter to inspect.",
+                "Click an object, or focus its row with Tab and press Enter to inspect.",
             ))
     }
 }

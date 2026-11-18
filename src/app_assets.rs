@@ -4,7 +4,7 @@ use std::borrow::Cow;
 assets::icon_assets!(
     ExtraIcons,
     [
-        Spool,
+        LayoutDashboard,
         Boxes,
         Activity,
         CircleDashed,
@@ -129,7 +129,7 @@ mod tests {
     #[test]
     fn navigation_thread_and_default_control_icons_are_bundled() {
         for path in [
-            "icons/spool.svg",
+            "icons/layout-dashboard.svg",
             "icons/boxes.svg",
             "icons/activity.svg",
             "icons/circle-dashed.svg",
@@ -147,7 +147,7 @@ mod tests {
                 .list("icons/")
                 .unwrap()
                 .iter()
-                .any(|p| p == "icons/spool.svg")
+                .any(|p| p == "icons/layout-dashboard.svg")
         );
     }
 }

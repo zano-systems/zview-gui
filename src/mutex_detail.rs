@@ -4,7 +4,7 @@ use crate::{
     model::{self, ChartSeries, Frame},
     step_area_chart::StepAreaChart,
 };
-use gpui_kit::component::{Icon, IconName, StyledExt, button::Button};
+use gpui_kit::component::{Icon, IconName, StyledExt};
 use gpui_kit::*;
 
 fn state_label(state: MutexState) -> &'static str {
@@ -158,13 +158,10 @@ impl ThreadsApp {
         );
         div().id("mutex-detail").debug_selector(|| "mutex-detail".into())
             .flex().flex_col().flex_1().min_h_0().gap_3()
-            .child(div().flex().flex_shrink_0().items_center().justify_between().flex_wrap().gap_3()
+            .child(div().flex_shrink_0().flex().items_center().gap_2()
                 .child(div().text_lg().font_semibold().child("Mutex details"))
-                .child(div().debug_selector(|| "back-to-objects".into()).child(
-                    Button::new("back-to-objects").label("Back to Kernel objects")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.show_kernel_objects(this.object_kind, window, cx);
-                        })))))
+                .child(crate::layout::info("mutex-info", "About mutex history",
+                    "Sample-and-hold until the next captured timestamp, not the exact lock/unlock time. Negative positions encode waiter counts, not negative depth. Missing readings break each area independently. No future readings are drawn.")))
             .child(div().debug_selector(|| "mutex-summary".into()).flex().flex_wrap().flex_shrink_0()
                 .gap_3().p_3().rounded_lg().border_1().border_color(rgb(BORDER)).bg(rgb(CARD))
                 .child(field("Name", key.name.clone()))
@@ -185,8 +182,6 @@ impl ThreadsApp {
                 .p_3().rounded_lg().border_1().border_color(rgb(BORDER)).bg(rgb(CARD))
                 .child(div().text_sm().font_semibold().child("Wait queue"))
                 .child(crate::wait_queue::threads("mutex", waiters, crate::wait_queue::Layout::Vertical))))
-            .child(crate::layout::note("mutex-note",
-                "Sample-and-hold until the next captured timestamp, not the exact lock/unlock time. Negative positions encode waiter counts, not negative depth. Missing readings break each area independently. No future readings are drawn."))
     }
 }
 

@@ -24,6 +24,8 @@ mod session_ui;
 #[path = "web_usage.rs"]
 mod usage_ui;
 
+struct AcquisitionWarningNotification;
+
 pub(super) struct Controls {
     pub available: bool,
     pub state: ClientState,
@@ -34,6 +36,11 @@ pub(super) struct Controls {
     client_id: Option<String>,
     view_interest: ViewInterest,
     usage: usage_ui::UsageInput,
+    action_bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
+    panel_bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
+    session_toggle_bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
+    pub(super) session_popover_open: bool,
+    pub(super) session_focus: FocusHandle,
     draft: session_ui::Draft,
     _draft_subscriptions: Vec<Subscription>,
 }
@@ -60,6 +67,11 @@ impl Controls {
             client_id: None,
             view_interest: ViewInterest::default(),
             usage: usage_ui::UsageInput::new(window, cx),
+            action_bounds: Default::default(),
+            panel_bounds: Default::default(),
+            session_toggle_bounds: Default::default(),
+            session_popover_open: false,
+            session_focus: cx.focus_handle().tab_stop(true),
             draft,
             _draft_subscriptions: subscriptions,
         }
@@ -393,12 +405,37 @@ impl ThreadsApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
+        let notice = match &message.event {
+            Event::Notice { message }
+                if self
+                    .adapter
+                    .state
+                    .session
+                    .as_ref()
+                    .and_then(|session| session.last_notice.as_ref())
+                    != Some(message) =>
+            {
+                Some(message.clone())
+            }
+            _ => None,
+        };
         let interrupted = matches!(
             &message.event,
             Event::Notice { .. } | Event::View(_) | Event::Status(_) | Event::UsageWindow { .. }
         );
         if !self.adapter.state.accept(message)? {
             return Ok(());
+        }
+        if let Some(notice) = notice {
+            window.push_notification(
+                Notification::warning(notice)
+                    .id::<AcquisitionWarningNotification>()
+                    .title("Acquisition warning")
+                    .placement(Anchor::TopRight)
+                    .autohide(true)
+                    .delivery(NotificationDelivery::InApp),
+                cx,
+            );
         }
         self.adapter
             .usage
@@ -623,7 +660,7 @@ pub fn adapter_reconnect() -> Result<(), JsValue> {
 #[wasm_bindgen]
 pub fn adapter_state() -> Result<String, JsValue> {
     let mut state = serde_json::Value::Null;
-    web::update_view(|this, _, cx| {
+    web::update_view(|this, window, cx| {
         let adapter = &this.adapter;
         state = json!({
             "available": adapter.available,
@@ -672,8 +709,34 @@ pub fn adapter_state() -> Result<String, JsValue> {
             "draft_recording": adapter.draft.recording_path(cx),
             "native_picker": adapter.draft.picker,
         });
+        state["session_popover_open"] = json!(adapter.session_popover_open);
+        state["session_toggle_focused"] = json!(adapter.session_focus.is_focused(window));
+        state["status_shimmer"] = json!(
+            adapter
+                .state
+                .animate_live_status(adapter.fresh_frame(), cx.reduce_motion())
+        );
+        state["reduced_motion"] = json!(cx.reduce_motion());
         state["history_origin"] = json!(this.live_history.origin());
         state["history_view"] = json!(adapter.history_view);
+        let actions = adapter.action_bounds.get();
+        state["session_action_bounds"] = json!({
+            "x": actions.left().as_f32(), "y": actions.top().as_f32(),
+            "width": actions.size.width.as_f32(), "height": actions.size.height.as_f32(),
+        });
+        for (name, bounds) in [
+            ("session_panel_bounds", adapter.panel_bounds.get()),
+            ("session_toggle_bounds", adapter.session_toggle_bounds.get()),
+            ("session_mode_bounds", adapter.draft.mode_bounds.get()),
+        ] {
+            state[name] = json!({
+                "x": bounds.left().as_f32(), "y": bounds.top().as_f32(),
+                "width": bounds.size.width.as_f32(), "height": bounds.size.height.as_f32(),
+            });
+        }
+        state["history_percent"] = json!(this.live_history.memory_percent());
+        state["history_memory_label"] = json!(this.live_history.memory_label());
+        state["history_retention_label"] = json!(this.live_history.retention_label());
         state["usage_window"] = json!(adapter.state.session.as_ref().and_then(|s| s.usage_window));
         state["usage_input"] = json!(adapter.usage.state.read(cx).value().to_string());
         let input = adapter.usage.state.read(cx).input_bounds();
