@@ -13,6 +13,102 @@ mod session_tests;
 mod workq_activity_tests;
 
 #[gpui_kit::test]
+fn thread_columns_sort_rows_and_keyboard_navigation_in_display_order(cx: &mut TestAppContext) {
+    let (app, mut cx) = setup(cx);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            let template = app.frames[app.frame].visible_threads()[0].clone();
+            app.frames[app.frame].threads = (0..3)
+                .map(|index| {
+                    let mut thread = template.clone();
+                    thread.address = index + 100;
+                    thread.name = ["charlie", "alpha", "bravo"][index as usize].into();
+                    thread.is_idle = Some(false);
+                    thread.runtime.as_mut().unwrap().cpu = Some([30., 10., 20.][index as usize]);
+                    thread
+                })
+                .collect();
+            cx.notify();
+        });
+        window.draw(cx).clear(cx);
+    });
+    let ordered = |cx: &mut VisualTestContext, addresses: &[u64]| {
+        let positions: Vec<_> = addresses
+            .iter()
+            .map(|address| {
+                cx.debug_bounds(match address {
+                    100 => "thread-row-100",
+                    101 => "thread-row-101",
+                    102 => "thread-row-102",
+                    _ => unreachable!(),
+                })
+                .unwrap()
+                .top()
+            })
+            .collect();
+        assert!(
+            positions.windows(2).all(|pair| pair[0] < pair[1]),
+            "{positions:?}"
+        );
+    };
+    ordered(&mut cx, &[100, 102, 101]);
+    let header = cx.debug_bounds("thread-sort-name").unwrap();
+    cx.simulate_click(
+        gpui::point(header.left() + px(8.), header.center().y),
+        Modifiers::default(),
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    app.read_with(&cx, |app, _| {
+        assert_eq!(
+            app.thread_sort.column,
+            super::thread_sort::Column::Name,
+            "header click"
+        )
+    });
+    ordered(&mut cx, &[101, 102, 100]);
+    cx.simulate_click(
+        gpui::point(header.left() + px(8.), header.center().y),
+        Modifiers::default(),
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    app.read_with(&cx, |app, _| {
+        assert!(app.thread_sort.descending, "Click reverses sort")
+    });
+    ordered(&mut cx, &[100, 102, 101]);
+    cx.simulate_click(
+        gpui::point(header.left() + px(8.), header.center().y),
+        Modifiers::default(),
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    ordered(&mut cx, &[101, 102, 100]);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.frames[app.frame].threads.reverse();
+            for thread in &mut app.frames[app.frame].threads {
+                thread.runtime.as_mut().unwrap().cpu = Some(thread.address as f64);
+            }
+            app.selected = None;
+            app.table_focus.focus(window, cx);
+            app.select_thread(true, cx);
+        });
+        window.draw(cx).clear(cx);
+    });
+    ordered(&mut cx, &[101, 102, 100]);
+    app.read_with(&cx, |app, _| assert_eq!(app.selected, Some(101)));
+    cx.simulate_keystrokes("down");
+    app.read_with(&cx, |app, _| assert_eq!(app.selected, Some(102)));
+    // Revisiting Overview preserves the chosen column and direction.
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.screen = Screen::KernelObjects;
+            app.show_overview(window, cx);
+        });
+        window.draw(cx).clear(cx);
+    });
+    ordered(&mut cx, &[101, 102, 100]);
+}
+
+#[gpui_kit::test]
 fn standalone_footer_keeps_source_and_playback_or_live_history(cx: &mut TestAppContext) {
     let (app, mut cx) = setup(cx);
     cx.update(|window, cx| window.draw(cx).clear(cx));

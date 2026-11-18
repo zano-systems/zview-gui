@@ -20,6 +20,10 @@ MCP integration is not implemented.
 
 - Offline snapshot inspection and recorded-session playback.
 - Threads overview and per-thread runtime and stack details.
+- Thread lists default to descending Load %. Select a column heading to sort;
+  select it again to reverse direction. Name sorting keeps rows stable while
+  live usage changes. The choice is retained across frames and screen navigation
+  for the current application instance. Missing readings sort last.
 - Kernel objects overview with search and type filters. The sidebar hides empty
   types using live discovery when available, otherwise the selected snapshot.
   If the selected type becomes empty, the filter returns to All types.

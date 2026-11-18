@@ -22,6 +22,7 @@ mod step_area_chart;
 #[cfg(test)]
 mod tests;
 mod thread_detail;
+mod thread_sort;
 mod time_series_chart;
 mod wait_queue;
 #[cfg(target_family = "wasm")]
@@ -215,6 +216,7 @@ struct ThreadsApp {
     error: Option<String>,
     collapsed: bool,
     selected: Option<u64>,
+    thread_sort: thread_sort::Sort,
     screen: Screen,
     missing_notice: Option<Screen>,
     table_focus: FocusHandle,
@@ -301,6 +303,7 @@ impl ThreadsApp {
             error,
             collapsed: false,
             selected: None,
+            thread_sort: thread_sort::Sort::default(),
             screen: Screen::Overview,
             missing_notice: None,
             table_focus: cx.focus_handle(),
@@ -715,7 +718,7 @@ impl ThreadsApp {
     }
 
     fn select_thread(&mut self, forward: bool, cx: &mut Context<Self>) {
-        let rows = self.frames[self.frame].visible_threads();
+        let rows = self.thread_sort.rows(&self.frames[self.frame]);
         if rows.is_empty() {
             self.selected = None;
         } else {
@@ -1148,9 +1151,68 @@ impl ThreadsApp {
             )
     }
 
+    fn thread_sort_header(
+        &self,
+        column: thread_sort::Column,
+        cx: &Context<Self>,
+    ) -> impl IntoElement + Styled {
+        let active = self.thread_sort.column == column;
+        let arrow = if self.thread_sort.descending {
+            "↓"
+        } else {
+            "↑"
+        };
+        let next_descending = if active {
+            !self.thread_sort.descending
+        } else {
+            column != thread_sort::Column::Name
+        };
+        div().debug_selector(move || column.id().into()).child(
+            Button::new(column.id())
+                .ghost()
+                .small()
+                .px_0()
+                .text_color(rgb(MUTED))
+                .label(if active {
+                    format!("{} {arrow}", column.label())
+                } else {
+                    column.label().into()
+                })
+                .accessibility_label(format!(
+                    "{}. {}Sort {}.",
+                    column.label(),
+                    if active {
+                        if self.thread_sort.descending {
+                            "Sorted descending. "
+                        } else {
+                            "Sorted ascending. "
+                        }
+                    } else {
+                        ""
+                    },
+                    if next_descending {
+                        "descending"
+                    } else {
+                        "ascending"
+                    },
+                ))
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.thread_sort.select(column);
+                    let rows = app.thread_sort.rows(&app.frames[app.frame]);
+                    if let Some(index) = rows
+                        .iter()
+                        .position(|thread| Some(thread.address) == app.selected)
+                    {
+                        app.thread_rows_scroll.scroll_to_item(index);
+                    }
+                    cx.notify();
+                })),
+        )
+    }
+
     fn table(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let frame = &self.frames[self.frame];
-        let rows = frame.visible_threads();
+        let rows = self.thread_sort.rows(frame);
         div()
             .id("thread-table")
             .debug_selector(|| "thread-table".into())
@@ -1201,11 +1263,27 @@ impl ThreadsApp {
                                     .bg(rgb(0x2a263e))
                                     .text_xs()
                                     .text_color(rgb(MUTED))
-                                    .child(div().flex_1().min_w(px(180.)).child("THREAD"))
-                                    .child(div().w(px(95.)).child("CPU %"))
-                                    .child(div().w(px(95.)).child("LOAD %"))
-                                    .child(div().w(px(250.)).child("STACK WATERMARK"))
-                                    .child(div().w(px(160.)).child("WATERMARK / SIZE")),
+                                    .child(div().flex_1().min_w(px(180.)).child(
+                                        self.thread_sort_header(thread_sort::Column::Name, cx),
+                                    ))
+                                    .child(div().w(px(95.)).child(
+                                        self.thread_sort_header(thread_sort::Column::Cpu, cx),
+                                    ))
+                                    .child(div().w(px(95.)).child(
+                                        self.thread_sort_header(thread_sort::Column::Load, cx),
+                                    ))
+                                    .child(div().w(px(250.)).child(
+                                        self.thread_sort_header(
+                                            thread_sort::Column::StackPercent,
+                                            cx,
+                                        ),
+                                    ))
+                                    .child(div().w(px(160.)).child(
+                                        self.thread_sort_header(
+                                            thread_sort::Column::StackBytes,
+                                            cx,
+                                        ),
+                                    )),
                             )
                             .child(
                                 div()
