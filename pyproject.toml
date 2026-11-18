@@ -9,7 +9,7 @@ build-backend = "hatchling.build"
 [project]
 name = "zview-gui"
 # Keep in step with Cargo.toml and web-ui/requirements-west.txt.
-version = "0.3.0"
+version = "0.4.0"
 description = "Browser UI for ZView: live and recorded Zephyr RTOS kernel views"
 readme = "web-ui/PYPI.md"
 license = "Apache-2.0"

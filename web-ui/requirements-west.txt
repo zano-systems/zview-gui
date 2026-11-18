@@ -1,4 +1,4 @@
 # `west packages pip --install` installs the zview-gui release for this module
 # revision: the adapter, the prebuilt browser site and their dependencies.
 # Keep in step with the version in pyproject.toml and Cargo.toml.
-zview-gui==0.3.0
+zview-gui==0.4.0
