@@ -255,6 +255,18 @@ fn screen_explanations_are_contextual_wrapped_and_keyboard_accessible(cx: &mut T
             cx.update(|window, cx| window.draw(cx).clear(cx));
             assert!(cx.debug_bounds(tooltip).is_none());
 
+            // Pointer clicks must not pin a hover explanation open.
+            cx.simulate_click(trigger.center(), Modifiers::default());
+            cx.update(|window, cx| window.simulate_mouse_move(point(px(0.), px(0.)), cx));
+            cx.executor()
+                .advance_clock(std::time::Duration::from_secs(1));
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            assert!(
+                cx.debug_bounds(tooltip).is_none(),
+                "click must not pin help"
+            );
+
             // The same explanation must open with focus alone, no pointer or activation.
             let mut reached = false;
             for _ in 0..64 {
