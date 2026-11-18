@@ -74,13 +74,16 @@ async def click_header(page, primary=False):
         current = await state(page)
     bounds = current["session_action_bounds"]
     assert bounds["width"] > 0 and bounds["height"] > 0, bounds
+    panel = current["session_panel_bounds"]
+    assert panel["x"] <= bounds["x"], current
+    assert bounds["x"] + bounds["width"] <= panel["x"] + panel["width"], current
     await page.mouse.click(bounds["x"] + (bounds["width"] - 12 if primary else 12),
                            bounds["y"] + bounds["height"] / 2)
 
 
 async def toggle_sidebar(page):
     current = await state(page)
-    sidebar = 54 if current["sidebar_collapsed"] else 320
+    sidebar = 54 if current["sidebar_collapsed"] else current["sidebar_width"]
     await page.mouse.click(sidebar + 27, 28)
     await page.wait_for_timeout(200)
 
@@ -106,10 +109,12 @@ async def check_sidebar_session(page):
         current = await state(page)
         panel = current["session_panel_bounds"]
         actions = current["session_action_bounds"]
-        assert panel["x"] >= 0 and panel["x"] + panel["width"] <= 320, current
+        assert panel["x"] >= 0 and panel["x"] + panel["width"] <= current["sidebar_width"], current
         assert panel["height"] <= height * .45 + 1, panel
         assert panel["y"] + panel["height"] <= height, panel
         assert actions["y"] >= panel["y"], actions
+        assert actions["x"] >= panel["x"], current
+        assert actions["x"] + actions["width"] <= panel["x"] + panel["width"], current
         assert actions["y"] + actions["height"] <= height, actions
     await toggle_sidebar(page)
     collapsed = await state(page)
