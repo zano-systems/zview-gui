@@ -4,7 +4,7 @@ use crate::{
     model::{self, ChartSeries, Frame},
     time_series_chart::TimeSeriesChart,
 };
-use gpui_kit::component::{StyledExt, button::Button, progress::Progress};
+use gpui_kit::component::{StyledExt, progress::Progress};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
@@ -86,13 +86,7 @@ impl ThreadsApp {
         let fill = queue.and_then(|queue| model::percentage(queue.used_msgs?, queue.max_msgs?));
         div().id("msgq-detail").debug_selector(|| "msgq-detail".into())
             .flex().flex_col().flex_1().min_h_0().gap_3()
-            .child(div().flex().flex_shrink_0().items_center().justify_between().flex_wrap().gap_3()
-                .child(div().text_lg().font_semibold().child("Message queue details"))
-                .child(div().debug_selector(|| "back-to-objects".into()).child(
-                    Button::new("back-to-objects").label("Back to Kernel objects")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.show_kernel_objects(this.object_kind, window, cx);
-                        })))))
+            .child(div().flex_shrink_0().text_lg().font_semibold().child("Message queue details"))
             .when(queue.is_none(), |el| el.child(
                 div().debug_selector(|| "msgq-absent".into()).p_2().flex_shrink_0().rounded_lg()
                     .border_1().border_color(rgb(BORDER)).child(crate::layout::note("msgq-absent-note",
@@ -111,7 +105,10 @@ impl ThreadsApp {
             .child(div().flex().flex_1().min_h_0().gap_3()
                 .child(div().debug_selector(|| "msgq-history".into()).flex_1().min_w_0().min_h_0()
                     .p_3().rounded_lg().border_1().border_color(rgb(BORDER)).bg(rgb(CARD)).flex().flex_col().gap_2()
-                    .child(div().text_sm().font_semibold().child("Queue depth"))
+                    .child(div().flex().items_center().gap_2()
+                        .child(div().text_sm().font_semibold().child("Queue depth"))
+                        .child(crate::layout::info("msgq-info", "About message queue history",
+                            "Recorded queue depth, not individual send/receive events. Operations between snapshots may leave no trace. Missing readings break the history line.")))
                     .child(div().text_xs().text_color(rgb(MUTED)).child(scale))
                     .child(div().debug_selector(|| "msgq-depth-plot".into()).flex_1().min_h_0()
                         .child(TimeSeriesChart::count("msgq-depth", series, rgb(color).into(), maximum)))
@@ -121,8 +118,6 @@ impl ThreadsApp {
                     .child(div().text_sm().font_semibold().child("Waiting threads"))
                     .child(div().text_xs().text_color(rgb(MUTED)).child(waiter_context(queue)))
                     .child(crate::wait_queue::threads("msgq", waiters, crate::wait_queue::Layout::Vertical))))
-            .child(crate::layout::note("msgq-note",
-                "Recorded queue depth, not individual send/receive events. Operations between snapshots may leave no trace. Missing readings break the history line."))
     }
 }
 

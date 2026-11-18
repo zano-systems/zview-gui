@@ -4,7 +4,7 @@ use crate::{
     model::{self, ChartSeries, Frame},
     step_area_chart::StepAreaChart,
 };
-use gpui_kit::component::{StyledExt, button::Button, progress::Progress};
+use gpui_kit::component::{StyledExt, progress::Progress};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
@@ -49,14 +49,7 @@ impl ThreadsApp {
             .id("semaphore-detail")
             .debug_selector(|| "semaphore-detail".into())
             .flex().flex_col().flex_1().min_h_0().gap_3()
-            .child(div().flex().flex_shrink_0().items_center().justify_between().flex_wrap().gap_3()
-                .child(div().text_lg().font_semibold().child("Semaphore details"))
-                .child(div().debug_selector(|| "back-to-objects".into()).child(
-                    Button::new("back-to-objects").label("Back to Kernel objects")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.show_kernel_objects(this.object_kind, window, cx);
-                        })),
-                )))
+            .child(div().flex_shrink_0().text_lg().font_semibold().child("Semaphore details"))
             .child(div().debug_selector(|| "semaphore-summary".into()).flex().flex_wrap()
                 .flex_shrink_0().gap_3().p_3().rounded_lg().border_1().border_color(rgb(BORDER)).bg(rgb(CARD))
                 .child(field("Name", key.name.clone()))
@@ -76,7 +69,10 @@ impl ThreadsApp {
                     .flex_1().min_w_0().min_h_0().p_3().rounded_lg()
                     .border_1().border_color(rgb(BORDER)).bg(rgb(CARD))
                     .flex().flex_col().gap_2()
-                    .child(div().text_sm().font_semibold().child("Available tokens & wait queue"))
+                    .child(div().flex().items_center().gap_2()
+                        .child(div().text_sm().font_semibold().child("Available tokens & wait queue"))
+                        .child(crate::layout::info("semaphore-info", "About semaphore history",
+                            "Sample-and-hold: each value is held until the next captured timestamp, not the exact operation time. Gaps start at missing readings. Negative positions encode waiter counts, not negative tokens. No persistent dots or future readings are drawn.")))
                     .child(div().text_xs().text_color(rgb(MUTED)).child(scale))
                     .child(div().flex().flex_wrap().gap_4().text_xs()
                         .child(div().text_color(rgb(MUTED)).child("Above zero · Available tokens"))
@@ -93,9 +89,6 @@ impl ThreadsApp {
                     .flex().flex_col().gap_3()
                     .child(div().text_sm().font_semibold().child("Wait queue"))
                     .child(crate::wait_queue::threads("semaphore", waiters, crate::wait_queue::Layout::Vertical))))
-            .child(crate::layout::note("semaphore-note",
-                "Sample-and-hold: each value is held until the next captured timestamp, not the exact operation time. Gaps start at missing readings. Negative positions encode waiter counts, not negative tokens. No persistent dots or future readings are drawn.",
-            ))
     }
 }
 

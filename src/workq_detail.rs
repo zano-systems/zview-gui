@@ -6,8 +6,7 @@ use crate::{
     workq_activity::{self, ACTIVE, Activity, BACKLOG, Pressure},
 };
 use gpui_kit::component::{
-    Icon, Sizable, StyledExt, button::Button, progress::Progress, scroll::ScrollableElement,
-    tag::Tag,
+    Icon, Sizable, StyledExt, progress::Progress, scroll::ScrollableElement, tag::Tag,
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -284,13 +283,10 @@ impl ThreadsApp {
         let series = series.with_playhead(self.playback_time(cx));
         div().id("workq-detail").debug_selector(|| "workq-detail".into())
             .flex().flex_col().flex_1().min_h_0().gap_2()
-            .child(div().flex().flex_shrink_0().items_center().justify_between().flex_wrap().gap_3()
+            .child(div().flex_shrink_0().flex().items_center().gap_2()
                 .child(div().text_lg().font_semibold().child("Work queue details"))
-                .child(div().debug_selector(|| "back-to-objects".into()).child(
-                    Button::new("back-to-objects").label("Back to Kernel objects")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.show_kernel_objects(this.object_kind, window, cx);
-                        })))))
+                .child(crate::layout::info("workq-info", "About work queue measurements",
+                    "Sampled state, not execution events or CPU utilization. Short jobs between polls can be missed. Busy estimates exclude unknown/not-started intervals. Cancelled and delayed item states are not captured.")))
             .child(div().debug_selector(|| "workq-summary".into()).flex().flex_wrap().flex_shrink_0()
                 .gap_3().p_3().rounded_lg().border_1().border_color(rgb(BORDER)).bg(rgb(CARD))
                 .child(field("Name", key.name.clone()))
@@ -329,8 +325,6 @@ impl ThreadsApp {
                             .without_dots().with_shaded_unknown_counts()))))
                 .child(weighted_panel(1.,queue_panel("workq-pending", "Items queue", pending, truncated,state==Activity::Processing,pressure)))
                 .child(weighted_panel(1.,queue_panel("workq-drain-waiters", "Drain waiters", waiters, false,false,pressure))))
-            .child(crate::layout::note("workq-note",
-                "Sampled state, not execution events or CPU utilization. Short jobs between polls can be missed. Busy estimates exclude unknown/not-started intervals. Cancelled and delayed item states are not captured."))
     }
 }
 

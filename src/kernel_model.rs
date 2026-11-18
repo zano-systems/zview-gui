@@ -213,7 +213,6 @@ impl Kind {
         }
     }
 
-    #[cfg(any(test, target_family = "wasm"))]
     pub fn group(self) -> &'static str {
         match self {
             Self::Heap => "heaps",

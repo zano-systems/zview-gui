@@ -4,12 +4,68 @@ use super::*;
 use crate::adapter_protocol::{
     BuildContext, Connection, Mode, SessionAction, SessionIndicator, Source, session_labels,
 };
+use crate::session_settings::AdvancedValues;
+use gpui_kit::component::collapsible::Collapsible;
 use gpui_kit::component::input::Input;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tab::{Tab, TabBar};
+use gpui_kit::component::tag::Tag;
 
 #[path = "web_native_picker.rs"]
 mod picker;
+
+/// A popover trigger with an explicit, stable focus handle for keyboard access.
+#[derive(IntoElement)]
+struct SessionStatusTrigger {
+    focus: FocusHandle,
+    label: SharedString,
+    icon: AnyElement,
+    bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
+    selected: bool,
+}
+
+impl gpui_kit::component::Selectable for SessionStatusTrigger {
+    fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    fn is_selected(&self) -> bool {
+        self.selected
+    }
+}
+
+impl RenderOnce for SessionStatusTrigger {
+    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        let label = self.label.clone();
+        let focus = self.focus.clone();
+        div()
+            .id("sidebar-session-toggle")
+            .track_focus(&self.focus)
+            .tab_stop(true)
+            .role(Role::Button)
+            .aria_label(self.label)
+            .size_6()
+            .relative()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(if self.selected { PURPLE } else { BORDER }))
+            .hover(|style| style.bg(rgb(CARD)))
+            .focus_visible(|style| style.border_color(rgb(PURPLE)))
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                focus.focus(window, cx)
+            })
+            .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
+            .child(self.icon)
+            .child(div().absolute().inset_0().child(
+                canvas(move |rect, _, _| self.bounds.set(rect), |_, _, _, _| {}).size_full(),
+            ))
+    }
+}
 
 pub(super) struct Draft {
     pub open: bool,
@@ -21,6 +77,7 @@ pub(super) struct Draft {
     resolution_revision: u64,
     scheduled_request: Option<serde_json::Value>,
     pub(super) advanced: bool,
+    detected: AdvancedValues,
     bound_build: String,
     build: Entity<InputState>,
     domain: Entity<InputState>,
@@ -32,6 +89,7 @@ pub(super) struct Draft {
     pub(super) picker: Option<crate::adapter_protocol::PickerKind>,
     picker_revision: u64,
     mode_focus: FocusHandle,
+    pub(super) mode_bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
 }
 
 impl Draft {
@@ -49,6 +107,7 @@ impl Draft {
             resolution_revision: 0,
             scheduled_request: None,
             advanced: false,
+            detected: AdvancedValues::default(),
             bound_build: String::new(),
             build: input("Build directory under the server data root"),
             domain: input("Default firmware image"),
@@ -60,6 +119,7 @@ impl Draft {
             picker: None,
             picker_revision: 0,
             mode_focus,
+            mode_bounds: Default::default(),
         }
     }
 
@@ -92,37 +152,58 @@ impl Draft {
     }
 
     pub(super) fn request(&self, cx: &App) -> serde_json::Value {
-        let mut data = json!({"mode": self.mode, "build_dir": Self::value(&self.build, cx)});
-        if self.mode == Mode::Live && !self.advanced {
-            return data;
+        self.advanced_values(cx)
+            .request(self.mode, &Self::value(&self.build, cx), None)
+    }
+
+    fn advanced_inputs(&self) -> [Entity<InputState>; 5] {
+        [
+            self.domain.clone(),
+            self.elf.clone(),
+            self.runner.clone(),
+            self.target.clone(),
+            self.clock.clone(),
+        ]
+    }
+
+    fn advanced_values(&self, cx: &App) -> AdvancedValues {
+        AdvancedValues(self.advanced_inputs().map(|input| Self::value(&input, cx)))
+    }
+
+    fn set_advanced(&self, values: &AdvancedValues, window: &mut Window, cx: &mut App) {
+        for (input, value) in self.advanced_inputs().into_iter().zip(&values.0) {
+            input.update(cx, |input, cx| input.set_value(value.clone(), window, cx));
         }
-        for (key, input) in [("domain", &self.domain), ("elf", &self.elf)] {
-            let value = Self::value(input, cx);
-            if !value.is_empty() {
-                data[key] = json!(value);
-            }
-        }
-        if self.mode == Mode::Live {
-            for (key, input) in [("runner", &self.runner), ("target", &self.target)] {
-                let value = Self::value(input, cx);
-                if !value.is_empty() {
-                    data[key] = json!(value);
-                }
-            }
-            let clock = Self::value(&self.clock, cx);
-            if !clock.is_empty() {
-                // An invalid number is sent as text so the server rejects it,
-                // rather than silently ignoring the user's override.
-                data["frequency"] = clock.parse::<u64>().map_or(json!(clock), |v| json!(v));
-            }
-        }
-        data
+    }
+
+    fn detection_request(&self, cx: &App) -> serde_json::Value {
+        self.advanced_values(cx).request(
+            self.mode,
+            &Self::value(&self.build, cx),
+            (self.mode == Mode::Live).then_some(&self.detected),
+        )
     }
 
     pub(super) fn context(&self, cx: &App) -> Option<&BuildContext> {
         self.resolved
             .as_ref()
             .and_then(|(request, context)| (*request == self.request(cx)).then_some(context))
+    }
+
+    fn capabilities<'a>(
+        &self,
+        session: Option<&'a crate::adapter_protocol::Session>,
+        cx: &App,
+    ) -> Option<&'a crate::adapter_protocol::Capabilities> {
+        let session = session?;
+        let Source::Live { configuration, .. } = session.source.as_ref() else {
+            return None;
+        };
+        let context = session.context.as_ref()?;
+        // Discovery describes the connected firmware, never an edited draft.
+        crate::session_settings::matches_discovery(&self.request(cx), context, configuration)
+            .then_some(session.capabilities.as_ref())
+            .flatten()
     }
 
     fn can_open(&self, state: &ClientState, cx: &App) -> bool {
@@ -178,12 +259,90 @@ fn provenance_note(context: &BuildContext) -> impl IntoElement {
 }
 
 impl ThreadsApp {
-    pub(crate) fn adapter_session_controls(&self, cx: &Context<Self>) -> Option<AnyElement> {
+    pub(crate) fn adapter_session_controls(
+        &self,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
+        if !self.adapter.available {
+            return None;
+        }
+        if !self.collapsed {
+            return Some(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .bg(rgb(crate::BG))
+                    .py_2()
+                    .px_2()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .children(self.adapter_session_panel(window, cx))
+                    .into_any_element(),
+            );
+        }
+        let indicator = self.adapter.indicator();
+        let label = format!(
+            "Session: {}. {}. Open session controls",
+            indicator.as_str(),
+            session_labels(
+                self.adapter.state.session.as_ref(),
+                self.adapter.state.connection
+            )
+            .join(". ")
+        );
+        let view = cx.entity().downgrade();
+        Some(
+            gpui_kit::component::popover::Popover::new("sidebar-session-popover")
+                .anchor(Anchor::BottomLeft)
+                .open(self.adapter.session_popover_open)
+                .on_open_change(cx.listener(|this, open: &bool, _, cx| {
+                    this.adapter.session_popover_open = *open;
+                    cx.notify();
+                }))
+                .trigger(SessionStatusTrigger {
+                    focus: self.adapter.session_focus.clone(),
+                    label: label.into(),
+                    selected: false,
+                    bounds: self.adapter.session_toggle_bounds.clone(),
+                    icon: Icon::new(match indicator {
+                        SessionIndicator::Healthy => assets::IconName::Activity,
+                        SessionIndicator::Busy => assets::IconName::LoaderCircle,
+                        SessionIndicator::Waiting
+                        | SessionIndicator::Warning
+                        | SessionIndicator::Failed => assets::IconName::CircleAlert,
+                        SessionIndicator::Idle => assets::IconName::CircleDashed,
+                    })
+                    .text_color(rgb(match indicator {
+                        SessionIndicator::Healthy => GREEN,
+                        SessionIndicator::Busy => BLUE,
+                        SessionIndicator::Waiting | SessionIndicator::Warning => 0xe0b76d,
+                        SessionIndicator::Failed => 0xf08b9f,
+                        SessionIndicator::Idle => MUTED,
+                    }))
+                    .into_any_element(),
+                })
+                .content(move |_, window, cx| {
+                    div()
+                        .id("sidebar-session-popover-content")
+                        .w(px(296.))
+                        .max_w((window.viewport_size().width - px(48.)).max(px(1.)))
+                        .children(view.upgrade().and_then(|view| {
+                            view.update(cx, |app, cx| app.adapter_session_panel(window, cx))
+                        }))
+                })
+                .into_any_element(),
+        )
+    }
+
+    fn adapter_session_panel(&self, window: &Window, cx: &Context<Self>) -> Option<AnyElement> {
         if !self.adapter.available {
             return None;
         }
         let state = &self.adapter.state;
         let indicator = self.adapter.indicator();
+        let animate = state.animate_live_status(self.adapter.fresh_frame(), cx.reduce_motion());
         let mut labels = session_labels(state.session.as_ref(), state.connection);
         if state.is_live()
             && !self.adapter.fresh_frame()
@@ -277,24 +436,31 @@ impl ThreadsApp {
             div()
                 .id("session-header-controls")
                 .debug_selector(|| "session-header-controls".into())
-                .w(px(640.))
-                .max_w_full()
+                .w_full()
                 .min_w_0()
-                .ml_auto()
+                .relative()
+                // Reserve space for navigation even on short windows.
+                .max_h(window.viewport_size().height * 0.45)
+                .overflow_y_scroll()
                 .p_2()
-                .rounded_md()
-                .border_1()
-                .border_color(rgb(BORDER))
-                .bg(rgb(CARD))
+                .when(self.collapsed, |el| {
+                    el.rounded_md()
+                        .border_1()
+                        .border_color(rgb(BORDER))
+                        .bg(rgb(CARD))
+                })
                 .flex()
-                .flex_wrap()
-                .items_center()
+                .flex_col()
                 .gap_3()
+                .child(div().absolute().inset_0().child({
+                    let bounds = self.adapter.panel_bounds.clone();
+                    canvas(move |rect, _, _| bounds.set(rect), |_, _, _, _| {}).size_full()
+                }))
                 .child(
                     div()
                         .id("session-header-context")
                         .min_w_0()
-                        .flex_1()
+                        .max_w_full()
                         .flex()
                         .flex_col()
                         .gap_1()
@@ -315,37 +481,33 @@ impl ThreadsApp {
                                         .aria_label(format!("Session status: {status}"))
                                         .child(icon),
                                 )
-                                .child(layout::note("session-header-status", status))
+                                .child(layout::note_with_shimmer(
+                                    "session-header-status",
+                                    status,
+                                    animate,
+                                ))
                                 .when(
                                     state.session.is_some()
                                         && state.connection == Connection::Connected,
                                     |el| {
-                                        el.child(layout::note(
+                                        el.child(layout::note_with_shimmer(
                                             "session-header-progress",
                                             labels[2].clone(),
+                                            animate,
                                         ))
                                     },
-                                ),
-                        )
+                                )
                         .child(
-                            layout::note(
-                                "session-header-source",
-                                format!("{} · {}", labels[1], labels[3]),
-                            )
-                            .w_full(),
-                        ),
-                )
-                .child(
                     div()
+                        .relative()
                         .flex()
                         .items_center()
                         .flex_shrink_0()
+                        .ml_auto()
                         .gap_2()
                         .child(
                             Button::new("session-configure")
                                 .small()
-                                .w(px(116.))
-                                .label("Configure…")
                                 .icon(Icon::new(assets::IconName::Settings))
                                 .accessibility_label("Configure session")
                                 .tooltip("Build, target, recording and connection settings")
@@ -358,8 +520,6 @@ impl ThreadsApp {
                             Button::new("session-primary-action")
                                 .small()
                                 .primary()
-                                .w(px(128.))
-                                .label(action.label())
                                 .icon(Icon::new(action_icon))
                                 .accessibility_label(format!("{} session", action.label()))
                                 .tooltip(match action {
@@ -397,10 +557,94 @@ impl ThreadsApp {
                                         SessionAction::Reconnect => this.reconnect_adapter(cx),
                                     }
                                 })),
+                        )
+                        .child(div().absolute().inset_0().child({
+                            let bounds = self.adapter.action_bounds.clone();
+                            canvas(move |rect, _, _| bounds.set(rect), |_, _, _, _| {}).size_full()
+                        })),
                         ),
+                        )
+                        .child(layout::note("session-header-board", labels[1].clone()).w_full())
+                        .child(layout::note("session-header-source",
+                            state.session.as_ref().map(|s| s.elf.clone()).unwrap_or_else(|| labels[3].clone()))
+                            .w_full()
+                            .text_ellipsis_start()),
                 )
+                .when_some(state.session.as_ref().and_then(|s| s.error.clone()), |el, error| {
+                    el.child(div().debug_selector(|| "session-panel-error".into())
+                        .text_xs().text_color(rgb(0xf08b9f)).whitespace_normal().child(error))
+                })
+                .when(state.is_live(), |el| el.child(self.session_history()))
                 .into_any_element(),
         )
+    }
+
+    fn session_history(&self) -> impl IntoElement {
+        let history = &self.live_history;
+        let description = history.cache_description();
+        let percent = history.memory_percent();
+        div()
+            .id("session-history")
+            .debug_selector(|| "session-history".into())
+            .w_full()
+            .max_w_full()
+            .min_w_0()
+            .mt_6()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .text_xs()
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .text_color(rgb(MUTED))
+                            .child("History cache")
+                            .child(layout::info(
+                                "session-history-info",
+                                "About current-view history cache",
+                                description,
+                            )),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(rgb(MUTED))
+                            .child(history.retention_label()),
+                    ),
+            )
+            .child(
+                gpui_kit::component::progress::Progress::new("session-history-progress")
+                    .value(percent)
+                    .color(rgb(MUTED))
+                    .accessibility_label(format!(
+                        "Estimated current-view history memory: {}",
+                        history.memory_label()
+                    ))
+                    .h(px(6.)),
+            )
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(rgb(MUTED))
+                    .child(history.memory_label()),
+            )
+            .when(history.limited(), |el| {
+                el.child(
+                    div()
+                        .debug_selector(|| "session-history-warning".into())
+                        .text_color(rgb(0xe0b76d))
+                        .child("Memory limit shortened history"),
+                )
+            })
     }
 
     pub(super) fn open_session_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -419,19 +663,14 @@ impl ThreadsApp {
         draft.mode = session.as_ref().map(|s| s.mode()).unwrap_or(Mode::Replay);
         draft.error = None;
         draft.resolved = None;
-        draft.advanced = configuration.is_some_and(|c| {
-            c.domain.is_some()
-                || c.elf.is_some()
-                || c.runner.is_some()
-                || c.target.is_some()
-                || c.frequency.is_some()
-        });
-        draft.bound_build = context.map(|c| c.build_dir.clone()).unwrap_or_default();
+        draft.detected = AdvancedValues::default();
+        draft.advanced = false;
+        draft.bound_build = configuration
+            .map(|c| c.build_dir.clone())
+            .or_else(|| context.map(|c| c.build_dir.clone()))
+            .unwrap_or_default();
         let values = [
-            (
-                &draft.build,
-                context.map(|c| c.build_dir.clone()).unwrap_or_default(),
-            ),
+            (&draft.build, draft.bound_build.clone()),
             (
                 &draft.domain,
                 if let Some(configuration) = configuration {
@@ -478,8 +717,15 @@ impl ThreadsApp {
         for (input, value) in values {
             input.update(cx, |input, cx| input.set_value(value, window, cx));
         }
+        if let (Some(context), Some(configuration)) = (context, configuration) {
+            draft.set_advanced(
+                &AdvancedValues::accepted(context, configuration),
+                window,
+                cx,
+            );
+        }
         let view = cx.entity().downgrade();
-        window.open_dialog(cx, move |dialog, _, cx| {
+        window.open_dialog(cx, move |dialog, window, cx| {
             let Some(app) = view.upgrade() else {
                 return dialog;
             };
@@ -494,7 +740,7 @@ impl ThreadsApp {
             let confirm = view.clone();
             dialog
                 .title("Session configuration")
-                .w(px(560.))
+                .w(px(680.).min((window.viewport_size().width - px(32.)).max(px(1.))))
                 .margin_top(px(32.))
                 .overlay_closable(false)
                 .keyboard(!pending)
@@ -525,9 +771,24 @@ impl ThreadsApp {
         let draft = &self.adapter.draft;
         let live = draft.mode == Mode::Live;
         let context = draft.context(cx);
+        let capabilities = draft.capabilities(self.adapter.state.session.as_ref(), cx);
         div().debug_selector(|| "session-configuration".into())
             .flex().flex_col().gap_3().min_w_0()
+            .child(div().flex().items_center().gap_2()
+                .child(div().text_sm().child(if live { "Live settings" } else { "Replay settings" }))
+                .child(if live {
+                    layout::info("session-live-help", "About Live settings",
+                        "Only the build directory is required. Advanced settings are filled automatically and can be edited. Collapsing Advanced keeps your values. Connect opens the probe; it does not flash firmware. Browse opens a system dialog; paths must stay inside the configured data root.").into_any_element()
+                } else {
+                    layout::info("session-replay-help", "About Replay settings",
+                        "Choose a recording and a matching ELF, or a build that supplies the ELF. Replay decodes up to 10 frames/s, not original recording time. Last 256 frames retained. Browse opens a system dialog; paths must stay inside the configured data root.").into_any_element()
+                }))
             .child(div().id("session-mode-keyboard")
+                .relative()
+                .child(div().absolute().inset_0().child({
+                    let bounds = draft.mode_bounds.clone();
+                    canvas(move |rect, _, _| bounds.set(rect), |_, _, _, _| {}).size_full()
+                }))
                 .track_focus(&draft.mode_focus).tab_stop(true)
                 .aria_label("Session mode. Use Left and Right arrow keys to switch.")
                 .on_key_down(cx.listener(|app, event: &KeyDownEvent, window, cx| {
@@ -555,40 +816,22 @@ impl ThreadsApp {
                     app.session_draft_changed(window, cx);
                     cx.notify();
                 }))))
-            .child(layout::note("session-path-help", if draft.picker.is_some() {
-                "The system file dialog is open. Select a path or cancel it to continue."
-            } else {
-                "Local app · Browse opens the system dialog · Paths must stay inside the configured data root."
-            }))
+            .when(draft.picker.is_some(), |el| el.child(layout::note("session-path-help",
+                "The system file dialog is open. Select a path or cancel it to continue.")))
             .child(self.path_field(if live { "Build directory" } else { "Build directory (optional)" }, crate::adapter_protocol::PickerKind::Directory, cx))
-            .when(live, |el| el.child(Button::new("advanced-session-overrides")
-                .label("Advanced overrides").toggled(draft.advanced)
-                .disabled(self.adapter.state.pending || draft.picker.is_some())
-                .on_click(cx.listener(|app, _, _, cx| {
-                    app.adapter.draft.advanced = !app.adapter.draft.advanced;
-                    app.schedule_session_build(cx);
-                    cx.notify();
-                }))))
-            .when(!live || draft.advanced, |el| el
+            .when(live, |el| el.child(self.session_advanced(cx)))
+            .when(!live, |el| el
                 .child(field("Firmware image (optional)", &draft.domain))
-                .child(self.path_field(if live { "ELF override (optional)" } else { "Matching ELF (required without a build)" }, crate::adapter_protocol::PickerKind::Elf, cx)))
+                .child(self.path_field("Matching ELF (required without a build)", crate::adapter_protocol::PickerKind::Elf, cx)))
             .when(!live, |el| el.child(self.path_field("Recording", crate::adapter_protocol::PickerKind::Recording, cx)))
-            .when(live && draft.advanced, |el| el
-                .child(field("Runner override (optional)", &draft.runner))
-                .child(field("MCU / GDB server override (optional)", &draft.target))
-                .child(field("Probe clock override in Hz (optional)", &draft.clock)))
-            .child(Button::new("resolve-build").label(if draft.resolving { "Detecting…" } else if live { "Refresh detected settings" } else { "Resolve build context" })
-                .disabled(draft.resolving || Draft::value(&draft.build, cx).is_empty() || self.adapter.state.pending)
-                .on_click(cx.listener(|app, _, _, cx| app.resolve_session_build(cx))))
+            .when(!live, |el| el.child(self.session_detection_button(cx)))
+            .when(live && draft.resolving, |el| el.child(
+                layout::note("session-detection-progress", "Detecting settings from the build directory…")))
             .when_some(context, |el, context| {
                 el.child(div().flex().flex_col().gap_1()
-                    .child(layout::note("resolved-board", format!("Board: {}", context.board.as_deref().unwrap_or("Unknown"))))
-                    .child(layout::note("resolved-image", format!("Firmware image: {} · Available: {}", context.domain, context.domains.join(", "))))
-                    .child(layout::note("resolved-elf", format!("ELF: {}", context.elf)))
-                    .when(live, |el| el.child(layout::note("resolved-runner", format!("Runner: {} · Target: {} · Clock: {}",
-                        context.runner.as_deref().unwrap_or("Default"),
-                        context.target.as_deref().unwrap_or("Default"),
-                        context.frequency.map(|v| format!("{v} Hz")).unwrap_or_else(|| "Default".into())))))
+                    .child(div().debug_selector(|| "resolved-board".into()).flex().flex_wrap()
+                        .child(Tag::color(gpui_kit::component::ColorName::Purple).small()
+                            .child(format!("Board: {}", context.board.as_deref().unwrap_or("Unknown")))))
                     .when(context.domains.len() > 1, |el| {
                         el.child(div().flex().flex_wrap().gap_1().children(
                             context.domains.iter().enumerate().map(|(i, domain)| {
@@ -602,7 +845,7 @@ impl ThreadsApp {
                                         app.adapter.draft.domain.update(cx, |input, cx| {
                                             input.set_value(name.clone(), window, cx)
                                         });
-                                        app.resolve_session_build(cx);
+                                        app.resolve_session_build(false, cx);
                                     }))
                             })
                         ))
@@ -613,20 +856,109 @@ impl ThreadsApp {
             .when_some(draft.error.clone(), |el, error| el.child(layout::note("session-draft-error", error)))
             .when_some(self.adapter.state.session.as_ref().and_then(|s| s.last_notice.clone()),
                 |el, notice| el.child(layout::note("adapter-notice", notice)))
-            .when_some(self.adapter.state.session.as_ref().and_then(|s| s.capabilities.as_ref()),
+            .when(live && capabilities.is_none(), |el| el.child(layout::note("discovery-pending",
+                "Group availability is unknown for these settings. Connect to discover firmware groups.")))
+            .when_some(capabilities,
                 |el, capabilities| el
-                    .child(layout::note("live-groups", format!("Discovered groups: {}", capabilities.groups.join(", "))))
-                    .child(layout::note("wait-queue-capability", if capabilities.is_waitq_walkable {
-                        "Firmware wait-queue layout is walkable."
-                    } else { "Firmware wait-queue layout cannot be walked; unavailable waiters are not empty queues." }))
+                    .child(div().flex().items_center().gap_2()
+                        .child(div().text_sm().child("Session discovery"))
+                        .child(if capabilities.is_waitq_walkable {
+                            layout::info("wait-queue-available", "About firmware discovery",
+                                "Groups marked available were discovered in the connected firmware; they are not necessarily being polled. Waiter inspection is available.").into_any_element()
+                        } else {
+                            layout::info("wait-queue-unavailable", "About firmware discovery",
+                                "Groups marked available were discovered in the connected firmware; they are not necessarily being polled. Waiter inspection is unavailable; unknown waiter counts do not mean zero waiters.").into_any_element()
+                        }))
+                    .child(div().debug_selector(|| "live-groups".into()).flex().flex_wrap().gap_2()
+                        .children(crate::session_settings::discovery_groups(capabilities).into_iter().map(|(group, available)| {
+                            let name = crate::session_settings::discovery_name(&group);
+                            let objects = self.adapter.state.session.as_ref()
+                                .and_then(|s| s.inventory.as_ref())
+                                .and_then(|inventory| inventory.get(&group))
+                                .map(Vec::as_slice);
+                            let text = crate::session_settings::discovery_tooltip(&name, available, objects);
+                            layout::info_tag(format!("discovery-{group}-{available}"), name, text, available)
+                        })))
                     .children(capabilities.missing.iter().enumerate().map(|(i, notice)|
                         layout::note(format!("capability-notice-{i}"), notice.clone()))))
-            .child(layout::note("session-mode-help", if live {
-                "Only the build directory is required. ELF, debug runner, target and probe clock are detected automatically. Advanced overrides are optional. Connect opens the probe; it does not flash firmware."
-            } else {
-                "Replay decodes up to 10 frames/s, not original recording time. Last 256 frames retained."
-            }))
             .into_any_element()
+    }
+
+    fn session_advanced(&self, cx: &Context<Self>) -> impl IntoElement {
+        let draft = &self.adapter.draft;
+        Collapsible::new()
+            .open(draft.advanced)
+            .border_1()
+            .border_color(rgb(BORDER))
+            .rounded_lg()
+            .min_w_0()
+            .child(
+                Button::new("advanced-session-overrides")
+                    .icon(if draft.advanced {
+                        IconName::ChevronDown
+                    } else {
+                        IconName::ChevronRight
+                    })
+                    .ghost()
+                    .w_full()
+                    .child(div().flex_1().child("Advanced"))
+                    .accessibility_label(if draft.advanced {
+                        "Collapse Advanced settings"
+                    } else {
+                        "Expand Advanced settings"
+                    })
+                    .toggled(draft.advanced)
+                    .disabled(self.adapter.state.pending || draft.picker.is_some())
+                    .on_click(cx.listener(|app, _, _, cx| {
+                        app.adapter.draft.advanced = !app.adapter.draft.advanced;
+                        cx.notify();
+                    })),
+            )
+            .content(
+                div()
+                    .debug_selector(|| "session-advanced-fields".into())
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .p_3()
+                    .min_w_0()
+                    .child(field("Firmware image", &draft.domain))
+                    .child(self.path_field("ELF", crate::adapter_protocol::PickerKind::Elf, cx))
+                    .child(field("Runner", &draft.runner))
+                    .child(field("MCU / GDB server", &draft.target))
+                    .child(field("Probe clock in Hz", &draft.clock))
+                    .child(layout::note(
+                        "advanced-settings-help",
+                        "Detected values are editable. Manual edits are kept during background detection.",
+                    ))
+                    .child(self.session_detection_button(cx))
+                    .child(
+                        div()
+                            .debug_selector(|| "refresh-settings-help".into())
+                            .text_xs()
+                            .text_color(rgb(MUTED))
+                            .child("Replaces advanced values with settings detected from the build directory. If detection fails, your values are kept."),
+                    ),
+            )
+    }
+
+    fn session_detection_button(&self, cx: &Context<Self>) -> impl IntoElement {
+        let draft = &self.adapter.draft;
+        Button::new("resolve-build")
+            .label(if draft.resolving {
+                "Detecting…"
+            } else if draft.mode == Mode::Live {
+                "Refresh detected settings"
+            } else {
+                "Resolve build context"
+            })
+            .disabled(
+                draft.resolving
+                    || Draft::value(&draft.build, cx).is_empty()
+                    || self.adapter.state.pending
+                    || draft.picker.is_some(),
+            )
+            .on_click(cx.listener(|app, _, _, cx| app.resolve_session_build(true, cx)))
     }
 
     fn session_actions(&self, cx: &Context<Self>) -> AnyElement {
@@ -695,7 +1027,7 @@ impl ThreadsApp {
         let build = Draft::value(&self.adapter.draft.build, cx);
         if self.adapter.draft.mode == Mode::Live && build != self.adapter.draft.bound_build {
             self.adapter.draft.bound_build = build;
-            self.adapter.draft.advanced = false;
+            self.adapter.draft.detected = AdvancedValues::default();
             // Overrides belong to a particular build, not the next folder chosen.
             let draft = &self.adapter.draft;
             for input in [
@@ -739,26 +1071,26 @@ impl ThreadsApp {
                     && draft.resolution_revision == revision
                     && draft.request(cx) == request
                 {
-                    app.start_build_resolution(request, revision, cx);
+                    app.start_build_resolution(revision, false, cx);
                 }
             });
         });
     }
 
-    fn resolve_session_build(&mut self, cx: &mut Context<Self>) {
-        let request = self.adapter.draft.request(cx);
-        self.adapter.draft.scheduled_request = Some(request.clone());
+    fn resolve_session_build(&mut self, refresh: bool, cx: &mut Context<Self>) {
+        self.adapter.draft.scheduled_request = Some(self.adapter.draft.request(cx));
         self.adapter.draft.resolution_revision =
             self.adapter.draft.resolution_revision.wrapping_add(1);
-        self.start_build_resolution(request, self.adapter.draft.resolution_revision, cx);
+        self.start_build_resolution(self.adapter.draft.resolution_revision, refresh, cx);
     }
 
-    fn start_build_resolution(
-        &mut self,
-        request: serde_json::Value,
-        revision: u64,
-        cx: &mut Context<Self>,
-    ) {
+    fn start_build_resolution(&mut self, revision: u64, refresh: bool, cx: &mut Context<Self>) {
+        let snapshot = self.adapter.draft.request(cx);
+        let request = if refresh && self.adapter.draft.mode == Mode::Live {
+            json!({"mode": Mode::Live, "build_dir": Draft::value(&self.adapter.draft.build, cx)})
+        } else {
+            self.adapter.draft.detection_request(cx)
+        };
         let generation = self.adapter.draft.generation;
         self.adapter.draft.resolving = true;
         self.adapter.draft.error = None;
@@ -787,7 +1119,7 @@ impl ThreadsApp {
                     .map_err(|e| e.to_string())
             }
             .await;
-            let _ = web::update_view(|app, _, cx| {
+            let _ = web::update_view(|app, window, cx| {
                 if !app.adapter.draft.open
                     || app.adapter.draft.generation != generation
                     || app.adapter.draft.resolution_revision != revision
@@ -795,9 +1127,23 @@ impl ThreadsApp {
                     return;
                 }
                 app.adapter.draft.resolving = false;
-                if request == app.adapter.draft.request(cx) {
+                if snapshot == app.adapter.draft.request(cx) {
                     match result {
-                        Ok(context) => app.adapter.draft.resolved = Some((request, context)),
+                        Ok(context) => {
+                            let draft = &mut app.adapter.draft;
+                            if draft.mode == Mode::Live {
+                                let detected = AdvancedValues::detected(&context);
+                                let values = draft.advanced_values(cx).merge(
+                                    &mut draft.detected,
+                                    &detected,
+                                    refresh,
+                                );
+                                draft.set_advanced(&values, window, cx);
+                            }
+                            let request = draft.request(cx);
+                            draft.scheduled_request = Some(request.clone());
+                            draft.resolved = Some((request, context));
+                        }
                         Err(error) => {
                             app.adapter.draft.resolved = None;
                             app.adapter.draft.error = Some(error);

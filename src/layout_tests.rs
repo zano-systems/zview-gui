@@ -196,6 +196,116 @@ fn summary_chart_cards_have_compact_aligned_headings_and_no_time_footer(cx: &mut
 type ScreenCase = (Screen, &'static [&'static str], &'static str);
 
 #[gpui_kit::test]
+fn screen_explanations_are_contextual_wrapped_and_keyboard_accessible(cx: &mut TestAppContext) {
+    let (app, mut cx) = setup(cx);
+    let cases = complete_session(&app, &mut cx);
+    for (width, height) in [(1000., 680.), (1480., 940.)] {
+        cx.simulate_resize(size(px(width), px(height)));
+        for (index, info, removed, tooltip) in [
+            (
+                0,
+                "thread-activity-info",
+                "thread-activity-legend",
+                "thread-activity-info-tooltip",
+            ),
+            (
+                2,
+                "kernel-objects-info",
+                "kernel-state-legend",
+                "kernel-objects-info-tooltip",
+            ),
+            (
+                3,
+                "semaphore-info",
+                "semaphore-note",
+                "semaphore-info-tooltip",
+            ),
+            (4, "mutex-info", "mutex-note", "mutex-info-tooltip"),
+            (5, "msgq-info", "msgq-note", "msgq-info-tooltip"),
+            (6, "slab-info", "slab-note", "slab-info-tooltip"),
+            (7, "workq-info", "workq-note", "workq-info-tooltip"),
+            (8, "heap-info", "heap-note", "heap-info-tooltip"),
+        ] {
+            cx.update(|window, cx| {
+                window.blur(cx);
+                window.simulate_mouse_move(point(px(0.), px(0.)), cx);
+                app.update(cx, |app, cx| {
+                    app.screen = cases[index].0.clone();
+                    cx.notify();
+                });
+                window.draw(cx).clear(cx);
+            });
+            let trigger = cx.debug_bounds(info).expect(info);
+            assert!(cx.debug_bounds(removed).is_none(), "{removed}");
+            assert!(cx.debug_bounds(tooltip).is_none());
+
+            // Hover opens the full explanation without changing the heading layout.
+            cx.update(|window, cx| window.simulate_mouse_move(trigger.center(), cx));
+            cx.run_until_parked();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_secs(1));
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            assert_info_tooltip_bounds(&mut cx, tooltip, width, height);
+            assert_eq!(cx.debug_bounds(info).unwrap(), trigger);
+            cx.update(|window, cx| window.simulate_mouse_move(point(px(0.), px(0.)), cx));
+            cx.executor()
+                .advance_clock(std::time::Duration::from_secs(1));
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            assert!(cx.debug_bounds(tooltip).is_none());
+
+            // The same explanation must open with focus alone, no pointer or activation.
+            let mut reached = false;
+            for _ in 0..64 {
+                cx.update(|window, cx| window.focus_next(cx));
+                cx.run_until_parked();
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+                if cx.debug_bounds(tooltip).is_some() {
+                    reached = true;
+                    break;
+                }
+            }
+            assert!(reached, "{info} must be reachable with Tab");
+            assert_info_tooltip_bounds(&mut cx, tooltip, width, height);
+            cx.simulate_keystrokes("escape");
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            assert!(cx.debug_bounds(tooltip).is_none(), "Esc dismisses help");
+            app.read_with(&cx, |app, _| assert_eq!(app.screen, cases[index].0));
+            cx.simulate_keystrokes("enter");
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            assert!(cx.debug_bounds(tooltip).is_some(), "Enter reopens help");
+            cx.update(|window, cx| window.focus_next(cx));
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            assert!(cx.debug_bounds(tooltip).is_none(), "blur closes help");
+        }
+    }
+}
+
+fn assert_info_tooltip_bounds(
+    cx: &mut VisualTestContext,
+    selector: &'static str,
+    width: f32,
+    height: f32,
+) {
+    let bounds = cx.debug_bounds(selector).expect(selector);
+    assert!(bounds.size.width <= px(420.), "{selector}: {bounds:?}");
+    assert!(
+        bounds.size.height > px(30.),
+        "long text must wrap: {bounds:?}"
+    );
+    assert!(
+        bounds.left() >= px(0.) && bounds.right() <= px(width),
+        "{bounds:?}"
+    );
+    assert!(
+        bounds.top() >= px(0.) && bounds.bottom() <= px(height),
+        "{bounds:?}"
+    );
+}
+
+#[gpui_kit::test]
 fn overview_chart_row_and_table_have_equal_height_at_every_supported_size(cx: &mut TestAppContext) {
     let (app, mut cx) = setup(cx);
     let baseline = app.read_with(&cx, |app, _| {
@@ -236,10 +346,11 @@ fn overview_chart_row_and_table_have_equal_height_at_every_supported_size(cx: &m
                 }
                 let charts = cx.debug_bounds("overview-charts").unwrap();
                 let heading = cx.debug_bounds("thread-table-heading").unwrap();
-                let legend = cx.debug_bounds("thread-activity-legend").unwrap();
                 let footer = cx.debug_bounds("session-footer").unwrap();
                 assert!(charts.bottom() <= heading.top() && heading.bottom() <= table.top());
-                assert!(table.bottom() <= legend.top() && legend.bottom() <= footer.top());
+                assert!(table.bottom() <= footer.top());
+                assert!(cx.debug_bounds("thread-activity-info").is_some());
+                assert!(cx.debug_bounds("thread-activity-legend").is_none());
                 assert!(footer.bottom() <= px(height));
             }
         }

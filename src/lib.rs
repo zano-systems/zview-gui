@@ -15,6 +15,8 @@ mod mutex_detail;
 mod recording;
 mod semaphore_detail;
 mod session;
+#[cfg(any(test, target_family = "wasm"))]
+mod session_settings;
 mod slab_detail;
 mod step_area_chart;
 #[cfg(test)]
@@ -41,8 +43,7 @@ use gpui_kit::component::{
     scroll::ScrollableElement,
     select::{SearchableVec, Select, SelectEvent, SelectState},
     sidebar::{
-        Sidebar, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem,
-        SidebarToggleButton,
+        Sidebar, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem, SidebarToggleButton,
     },
     tooltip::Tooltip,
 };
@@ -64,7 +65,9 @@ actions!(
         BackToThreads,
         BackToObjects,
         SelectNextThread,
-        SelectPreviousThread
+        SelectPreviousThread,
+        DismissScreenInfo,
+        ShowScreenInfo
     ]
 );
 
@@ -170,6 +173,33 @@ impl Screen {
 }
 
 struct MissingObjectNotification;
+
+/// Discovery covers the whole live session; a polled frame may cover one view.
+/// Offline sessions and live sessions awaiting discovery use the current frame.
+fn object_count(
+    frame: &Frame,
+    inventory: Option<&std::collections::BTreeMap<String, Vec<adapter_protocol::HeapIdentity>>>,
+    kind: Option<kernel_model::Kind>,
+) -> usize {
+    use kernel_model::Kind;
+    Kind::ALL
+        .into_iter()
+        .filter(|candidate| kind.is_none_or(|kind| kind == *candidate))
+        .map(|kind| {
+            if let Some(inventory) = inventory {
+                return inventory.get(kind.group()).map_or(0, Vec::len);
+            }
+            match kind {
+                Kind::Heap => frame.heaps.len(),
+                Kind::MemorySlab => frame.mem_slabs.len(),
+                Kind::MessageQueue => frame.msgqs.len(),
+                Kind::Mutex => frame.mutexes.len(),
+                Kind::Semaphore => frame.semaphores.len(),
+                Kind::WorkQueue => frame.workqs.len(),
+            }
+        })
+        .sum()
+}
 
 struct ThreadsApp {
     frames: Vec<Frame>,
@@ -709,6 +739,7 @@ impl ThreadsApp {
     ) {
         self.screen = Screen::KernelObjects;
         self.object_kind = kind;
+        self.sync_object_kind();
         self.object_search
             .update(cx, |input, cx| input.focus(window, cx));
         cx.notify();
@@ -744,14 +775,21 @@ impl ThreadsApp {
             .gap_2()
             .text_sm()
             .text_color(rgb(MUTED))
-            .child("Monitor")
+            .child(div().h_6().px_1().flex().items_center().child("Monitor"))
             .child("›")
             .when(!section_link, |el| {
-                el.child(if in_threads {
-                    "Overview"
-                } else {
-                    "Kernel objects"
-                })
+                el.child(
+                    div()
+                        .h_6()
+                        .px_1()
+                        .flex()
+                        .items_center()
+                        .child(if in_threads {
+                            "Overview"
+                        } else {
+                            "Kernel objects"
+                        }),
+                )
             })
             .when(section_link, |el| {
                 let id = if in_threads {
@@ -760,35 +798,49 @@ impl ThreadsApp {
                     "objects-breadcrumb"
                 };
                 el.child(
-                    div().debug_selector(move || id.into()).child(
-                        Button::new(id)
-                            .text()
-                            .small()
-                            .label(if in_threads {
-                                "Overview"
-                            } else {
-                                "Kernel objects"
-                            })
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                if in_threads {
-                                    this.show_overview(window, cx);
+                    div()
+                        .flex()
+                        .flex_shrink_0()
+                        .items_center()
+                        .debug_selector(move || id.into())
+                        .child(
+                            Button::new(id)
+                                .ghost()
+                                .small()
+                                .px_1()
+                                .text_color(rgb(MUTED))
+                                .label(if in_threads {
+                                    "Overview"
                                 } else {
-                                    this.follow_object_breadcrumb(None, window, cx);
-                                }
-                            })),
-                    ),
+                                    "Kernel objects"
+                                })
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    if in_threads {
+                                        this.show_overview(window, cx);
+                                    } else {
+                                        this.follow_object_breadcrumb(None, window, cx);
+                                    }
+                                })),
+                        ),
                 )
             })
             .when_some(kind, |el, kind| {
                 el.child("›").child(
                     div()
                         .debug_selector(|| "object-type-breadcrumb".into())
-                        .when(!is_detail, |el| el.child(kind.label()))
+                        .flex()
+                        .flex_shrink_0()
+                        .items_center()
+                        .when(!is_detail, |el| {
+                            el.child(div().h_6().px_1().flex().items_center().child(kind.label()))
+                        })
                         .when(is_detail, |el| {
                             el.child(
                                 Button::new("object-type-breadcrumb")
-                                    .text()
+                                    .ghost()
                                     .small()
+                                    .px_1()
+                                    .text_color(rgb(MUTED))
                                     .label(kind.label())
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.follow_object_breadcrumb(Some(kind), window, cx);
@@ -801,7 +853,11 @@ impl ThreadsApp {
                 el.child("›").child(
                     div()
                         .debug_selector(|| "breadcrumb-current".into())
-                        .text_color(rgb(0xe6dfef))
+                        .h_6()
+                        .px_1()
+                        .flex()
+                        .items_center()
+                        .text_color(rgb(MUTED))
                         .child(name.to_string()),
                 )
             })
@@ -818,33 +874,28 @@ impl ThreadsApp {
         }
     }
 
-    fn object_inventory_count(&self, kind: Option<kernel_model::Kind>) -> Option<usize> {
+    fn object_count(&self, kind: Option<kernel_model::Kind>) -> usize {
         #[cfg(target_family = "wasm")]
-        if let Some(inventory) = self
+        let inventory = self
             .adapter
             .state
             .session
             .as_ref()
             .filter(|session| session.mode() == adapter_protocol::Mode::Live)
-            .and_then(|session| session.inventory.as_ref())
-        {
-            return Some(
-                inventory
-                    .iter()
-                    .filter(|(group, _)| {
-                        group.as_str() != "threads"
-                            && kind.is_none_or(|kind| kind.group() == group.as_str())
-                    })
-                    .map(|(_, rows)| rows.len())
-                    .sum(),
-            );
-        }
-        let _ = kind;
-        None
+            .and_then(|session| session.inventory.as_ref());
+        #[cfg(not(target_family = "wasm"))]
+        let inventory = None;
+        object_count(&self.frames[self.frame], inventory, kind)
     }
 
-    fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let objects = kernel_model::rows(&self.frames[self.frame]);
+    fn sync_object_kind(&mut self) {
+        if self.object_kind.is_some() && self.object_count(self.object_kind) == 0 {
+            self.object_kind = None;
+        }
+    }
+
+    fn sidebar(&self, _window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let width = px(if self.uses_web_adapter() { 290. } else { 230. });
         let in_objects = matches!(
             self.screen,
             Screen::KernelObjects
@@ -857,58 +908,72 @@ impl ThreadsApp {
         );
         let types = std::iter::once(None)
             .chain(kernel_model::Kind::ALL.map(Some))
-            .map(|kind| {
+            .filter_map(|kind| {
                 let label = kind.map_or("All types", kernel_model::Kind::label);
-                let count = objects
-                    .iter()
-                    .filter(|row| kind.is_none_or(|kind| row.kind == kind))
-                    .count();
-                let count = self.object_inventory_count(kind).unwrap_or(count);
+                let count = self.object_count(kind);
+                if kind.is_some() && count == 0 {
+                    return None;
+                }
                 let selector = kind.map_or_else(
                     || "object-type-all".to_string(),
                     |kind| format!("object-type-{}", kind.label()),
                 );
-                SidebarMenuItem::new(label)
-                    .active(in_objects && self.object_kind == kind)
-                    .suffix(move |_, _| {
-                        div()
-                            .debug_selector({
-                                let selector = selector.clone();
-                                move || selector.clone()
-                            })
-                            .text_xs()
-                            .child(count.to_string())
-                    })
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.show_kernel_objects(kind, window, cx);
-                    }))
+                Some(
+                    SidebarMenuItem::new(label)
+                        .active(in_objects && self.object_kind == kind)
+                        .suffix(move |_, _| {
+                            div()
+                                .debug_selector({
+                                    let selector = selector.clone();
+                                    move || selector.clone()
+                                })
+                                .text_xs()
+                                .child(count.to_string())
+                        })
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.show_kernel_objects(kind, window, cx);
+                        })),
+                )
             })
             .collect::<Vec<_>>();
         Sidebar::new("navigation")
-            .w(px(230.))
+            .w(width)
             .collapsed(self.collapsed)
             .collapsible(true)
             .header(
                 SidebarHeader::new()
-                    .p_4()
+                    .debug_selector(|| "sidebar-brand-header".into())
+                    // Sidebar already supplies horizontal padding around its header.
+                    .py_4()
+                    .px_0()
                     .flex_col()
                     .items_stretch()
                     .gap_3()
                     .child(
                         div()
+                            .debug_selector(|| "sidebar-brand-row".into())
+                            .w_full()
                             .flex()
                             .items_center()
-                            .gap_3()
-                            .child(help::mark(px(36.)))
+                            .justify_center()
+                            .gap_2()
+                            .child(
+                                help::mark(px(if self.collapsed { 28. } else { 36. }))
+                                    .debug_selector(|| "sidebar-brand-mark".into()),
+                            )
                             .when(!self.collapsed, |el| {
                                 el.child(
                                     div()
+                                        .debug_selector(|| "sidebar-brand-text".into())
+                                        .min_w_0()
                                         .flex()
                                         .flex_col()
                                         .child(div().font_semibold().child("ZView"))
                                         .child(
                                             div()
+                                                .debug_selector(|| "sidebar-brand-subtitle".into())
                                                 .text_xs()
+                                                .truncate()
                                                 .text_color(rgb(MUTED))
                                                 .child("Zephyr runtime inspector"),
                                         ),
@@ -921,7 +986,7 @@ impl ThreadsApp {
                     SidebarMenu::new()
                         .child(
                             SidebarMenuItem::new("Overview")
-                                .icon(Icon::new(assets::IconName::Spool))
+                                .icon(Icon::new(assets::IconName::LayoutDashboard))
                                 .active(!in_objects)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.show_overview(window, cx)
@@ -935,8 +1000,7 @@ impl ThreadsApp {
                                 .click_to_open(true)
                                 .children(types)
                                 .suffix({
-                                    let count =
-                                        self.object_inventory_count(None).unwrap_or(objects.len());
+                                    let count = self.object_count(None);
                                     move |_, _| {
                                         div()
                                             .debug_selector(|| "kernel-navigation".into())
@@ -965,32 +1029,56 @@ impl ThreadsApp {
                         )),
                 ),
             )
-            .footer(SidebarFooter::new().p_4().when(
-                !self.collapsed && !self.uses_web_adapter(),
-                |el| {
-                    let mode = "offline";
-                    el.child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .text_xs()
-                            .text_color(rgb(MUTED))
-                            .child(if self.recording_elf.is_some() {
-                                "RECORDING SESSION"
-                            } else if self.source.is_some() {
-                                "DUMP SESSION"
-                            } else {
-                                "BUNDLED SAMPLE"
-                            })
-                            .child(format!(
-                                "Frame {} of {} · {mode}",
-                                self.frame + 1,
-                                self.frames.len()
-                            )),
-                    )
-                },
-            ))
+            .footer(
+                div()
+                    .w_full()
+                    .p_2()
+                    .when(self.uses_web_adapter() && !self.collapsed, |el| {
+                        // Sidebar's footer slot adds 12 px at each side and below.
+                        // Extend the session section through that navigation inset.
+                        el.w(width)
+                            .flex_shrink_0()
+                            .ml(-px(12.))
+                            .mb(-px(12.))
+                            .p_0()
+                            .border_t_1()
+                            .border_color(rgb(BORDER))
+                            .bg(rgb(BG))
+                    })
+                    .children({
+                        #[cfg(target_family = "wasm")]
+                        {
+                            self.adapter_session_controls(_window, cx)
+                        }
+                        #[cfg(not(target_family = "wasm"))]
+                        {
+                            None::<AnyElement>
+                        }
+                    })
+                    .when(!self.collapsed && !self.uses_web_adapter(), |el| {
+                        let mode = "offline";
+                        el.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_2()
+                                .text_xs()
+                                .text_color(rgb(MUTED))
+                                .child(if self.recording_elf.is_some() {
+                                    "RECORDING SESSION"
+                                } else if self.source.is_some() {
+                                    "DUMP SESSION"
+                                } else {
+                                    "BUNDLED SAMPLE"
+                                })
+                                .child(format!(
+                                    "Frame {} of {} · {mode}",
+                                    self.frame + 1,
+                                    self.frames.len()
+                                )),
+                        )
+                    }),
+            )
     }
 
     fn chart_card(
@@ -1302,6 +1390,9 @@ impl Render for ThreadsApp {
             });
             window.request_animation_frame();
         }
+        // Reconcile before rendering or publishing the live view so frame and
+        // inventory changes cannot leave an invisible type filter selected.
+        self.sync_object_kind();
         #[cfg(target_family = "wasm")]
         self.sync_live_view(cx);
         #[cfg(target_family = "wasm")]
@@ -1347,7 +1438,7 @@ impl Render for ThreadsApp {
                         this.show_kernel_objects(this.object_kind, window, cx)
                     }))
             })
-            .child(self.sidebar(cx))
+            .child(self.sidebar(window, cx))
             .child(
                 div()
                     .id(match self.screen {
@@ -1368,7 +1459,8 @@ impl Render for ThreadsApp {
                     .flex()
                     .flex_col()
                     .p_4()
-                    .gap_3()
+                    .pt_2()
+                    .gap_2()
                     .overflow_hidden()
                     .child(
                         div()
@@ -1392,18 +1484,16 @@ impl Render for ThreadsApp {
                                             .collapsed(self.collapsed)
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.collapsed = !this.collapsed;
+                                                #[cfg(target_family = "wasm")]
+                                                {
+                                                    this.adapter.session_popover_open = false;
+                                                }
                                                 cx.notify();
                                             })),
                                     )
                                     .child(self.breadcrumbs(cx)),
                             )
-                            .when(!self.uses_web_adapter(), |el| el.child(self.session_menu(cx)))
-                            .children({
-                                #[cfg(target_family = "wasm")]
-                                { self.adapter_session_controls(cx) }
-                                #[cfg(not(target_family = "wasm"))]
-                                { None::<AnyElement> }
-                            }),
+                            .when(!self.uses_web_adapter(), |el| el.child(self.session_menu(cx))),
                     )
                     .when(self.screen == Screen::Overview && !live_loading, |el| {
                         el.child(
@@ -1572,13 +1662,14 @@ impl Render for ThreadsApp {
                                 ),
                         )
                         .child(div().debug_selector(|| "thread-table-heading".into())
-                            .flex().flex_shrink_0().justify_between()
-                            .child(format!("All threads · {}", frame.visible_threads().len()))
+                            .flex().flex_shrink_0().items_center().justify_between()
+                            .child(div().flex().items_center().gap_2()
+                                .child(format!("All threads · {}", frame.visible_threads().len()))
+                                .child(layout::info("thread-activity-info", "About thread activity",
+                                    "Green activity icon: CPU activity since previous sample. Gray dashed circle: no observed activity or unavailable. Not current scheduler state.")))
                             .child(div().text_xs().text_color(rgb(MUTED))
                                 .child("Click to inspect · ↑/↓ select · Enter to inspect")))
                         .child(self.table(cx))
-                        .child(layout::note("thread-activity-legend",
-                            "Green activity icon: CPU activity since previous sample · Gray dashed circle: no observed activity or unavailable · Not current scheduler state"))
                     })
                     .child(
                         div()
@@ -1591,7 +1682,9 @@ impl Render for ThreadsApp {
                             .justify_between()
                             .text_xs()
                             .text_color(rgb(MUTED))
-                            .child(div().flex_1().min_w_0().child(layout::note("session-source",
+                            // Keep the spacer so history/playback stays right-aligned.
+                            // Adapter sessions already identify their source in the header.
+                            .child(div().flex_1().min_w_0().when(!self.uses_web_adapter(), |el| el.child(layout::note("session-source",
                                 self.source
                                     .as_ref()
                                     .map(|p| match &self.recording_elf {
@@ -1602,8 +1695,8 @@ impl Render for ThreadsApp {
                                         "Bundled real dump · sys_heap_v4.3 recording, frame 2"
                                             .into()
                                     }),
-                            )))
-                            .when(frame.is_live, |el| {
+                            ))))
+                            .when(frame.is_live && !self.uses_web_adapter(), |el| {
                                 let description = self.live_history.label();
                                 el.child(
                                     div().id("live-history-status").debug_selector(|| "live-history-status".into())
@@ -1753,6 +1846,9 @@ pub fn run() {
 
 fn bind_keys(cx: &mut App) {
     cx.bind_keys([
+        KeyBinding::new("escape", DismissScreenInfo, Some("ScreenInfo")),
+        KeyBinding::new("enter", ShowScreenInfo, Some("ScreenInfo")),
+        KeyBinding::new("space", ShowScreenInfo, Some("ScreenInfo")),
         KeyBinding::new("enter", OpenThread, Some("ThreadTable")),
         KeyBinding::new("down", SelectNextThread, Some("ThreadTable")),
         KeyBinding::new("up", SelectPreviousThread, Some("ThreadTable")),
