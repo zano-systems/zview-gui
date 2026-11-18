@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -61,23 +62,107 @@ async def fill_canvas_input(page, y, text):
 
 
 async def click_header(page, primary=False):
-    """Click actual GPUI header buttons, including the wrapped minimum layout."""
+    """Click actual sidebar actions, opening the collapsed session popover first."""
     # A viewport/sidebar change reaches GPUI's canvas layout on a later frame.
     await page.wait_for_timeout(150)
     current = await state(page)
-    width = page.viewport_size["width"]
-    sidebar = 54 if current["sidebar_collapsed"] else 230
-    wrapped = width - sidebar - 32 < 832
-    await page.mouse.click(width - (88 if primary else 210), 82 if wrapped else 46)
+    if current["sidebar_collapsed"] and not current["session_popover_open"]:
+        bounds = current["session_toggle_bounds"]
+        await page.mouse.click(bounds["x"] + bounds["width"] / 2,
+                               bounds["y"] + bounds["height"] / 2)
+        await page.wait_for_timeout(200)
+        current = await state(page)
+    bounds = current["session_action_bounds"]
+    assert bounds["width"] > 0 and bounds["height"] > 0, bounds
+    await page.mouse.click(bounds["x"] + (bounds["width"] - 12 if primary else 12),
+                           bounds["y"] + bounds["height"] / 2)
 
 
 async def toggle_sidebar(page):
     current = await state(page)
-    width = page.viewport_size["width"]
-    sidebar = 54 if current["sidebar_collapsed"] else 230
-    wrapped = width - sidebar - 32 < 832
-    await page.mouse.click(sidebar + 27, 28 if wrapped else 46)
+    sidebar = 54 if current["sidebar_collapsed"] else 320
+    await page.mouse.click(sidebar + 27, 28)
     await page.wait_for_timeout(200)
+
+
+async def select_live_mode(page):
+    bounds = (await state(page))["session_mode_bounds"]
+    # Segmented tabs are content-sized at the leading edge, not half-width.
+    await page.mouse.click(bounds["x"] + 28,
+                           bounds["y"] + bounds["height"] / 2)
+
+
+async def click_picker(page, y):
+    bounds = (await state(page))["session_mode_bounds"]
+    await page.mouse.click(bounds["x"] + bounds["width"] - 16, y)
+
+
+async def check_sidebar_session(page):
+    """Sidebar placement, short-window reachability and collapse preserve history."""
+    before = await state(page)
+    for width, height in [(1400, 1000), (1000, 680), (1000, 500)]:
+        await page.set_viewport_size({"width": width, "height": height})
+        await page.wait_for_timeout(250)
+        current = await state(page)
+        panel = current["session_panel_bounds"]
+        actions = current["session_action_bounds"]
+        assert panel["x"] >= 0 and panel["x"] + panel["width"] <= 320, current
+        assert panel["height"] <= height * .45 + 1, panel
+        assert panel["y"] + panel["height"] <= height, panel
+        assert actions["y"] >= panel["y"], actions
+        assert actions["y"] + actions["height"] <= height, actions
+    await toggle_sidebar(page)
+    collapsed = await state(page)
+    assert collapsed["sidebar_collapsed"], collapsed
+    bounds = collapsed["session_toggle_bounds"]
+    await page.mouse.click(bounds["x"] + bounds["width"] / 2,
+                           bounds["y"] + bounds["height"] / 2)
+    await wait_state(page, lambda s: s["session_popover_open"], "collapsed session popover")
+    await page.keyboard.press("Escape")
+    await wait_state(page, lambda s: not s["session_popover_open"], "dismissed session popover")
+    # Leave the trigger, then reach it again through keyboard navigation.
+    await page.keyboard.press("Tab")
+    for _ in range(64):
+        if (await state(page))["session_toggle_focused"]:
+            break
+        await page.keyboard.press("Tab")
+        await page.wait_for_timeout(30)
+    assert (await state(page))["session_toggle_focused"], "Session trigger must be keyboard reachable"
+    await page.keyboard.press("Enter")
+    await wait_state(page, lambda s: s["session_popover_open"], "keyboard session popover")
+    await page.keyboard.press("Escape")
+    await wait_state(page, lambda s: not s["session_popover_open"], "keyboard popover dismissal")
+    assert (await state(page))["session_toggle_focused"], "Keyboard dismissal restores trigger focus"
+    await toggle_sidebar(page)
+    await page.set_viewport_size({"width": 1400, "height": 1000})
+    after = await state(page)
+    assert after["session_id"] == before["session_id"], after
+    assert after["history_origin"] == before["history_origin"], after
+    assert after["history_bytes"] == before["history_bytes"], after
+    assert after["requested_view"] == before["requested_view"], after
+
+
+async def check_sidebar_live(page, live, base):
+    """Focused coverage of session placement without exercising every form field."""
+    with tempfile.TemporaryDirectory(dir=ROOT / "target", prefix="sidebar-smoke-") as temp:
+        build = make_build(Path(temp)).relative_to(ROOT).as_posix()
+        async with ClientSession() as client:
+            response = await client.post(base + "/api/session/live", json={"build_dir": build})
+            assert response.status == 202, await response.text()
+        await wait_state(page, lambda s: s["frames_received"] >= 300, "sidebar history populated")
+        await check_sidebar_session(page)
+        assert live.calls == 1, "Sidebar layout must not reopen acquisition."
+        await click_header(page)
+        await wait_state(page, lambda s: s["dialog_open"], "sidebar Configure")
+        await page.keyboard.press("Escape")
+        await wait_state(page, lambda s: not s["dialog_open"], "sidebar configuration dismissed")
+        await click_header(page, primary=True)
+        await wait_state(page, lambda s: s["status"] == "stopped" and s["can_reconnect"],
+                         "sidebar Disconnect")
+        await click_header(page, primary=True)
+        await wait_state(page, lambda s: s["status"] == "reading" and s["frames_received"] > 0,
+                         "sidebar Reconnect")
+        assert live.calls == 2, "Only explicit Reconnect should reopen acquisition."
 
 
 async def check_configuration(page, screenshot=None):
@@ -146,7 +231,7 @@ async def check_configuration(page, screenshot=None):
             await click_header(page)
             await wait_state(page, lambda s: s["dialog_open"], "reopened dialog")
             await page.wait_for_timeout(250)
-            await page.mouse.click(460, 93)
+            await select_live_mode(page)
             await wait_state(page, lambda s: s["draft_mode"] == "live", "live configuration preview")
             await asyncio.wait_for(requested.wait(), timeout=5)
             await page.keyboard.press("Escape")
@@ -180,7 +265,7 @@ async def check_configuration(page, screenshot=None):
         await click_header(page)
         await wait_state(page, lambda s: s["dialog_open"], "minimum-viewport configuration")
         await page.wait_for_timeout(250)
-        await page.mouse.click(260, 93)
+        await select_live_mode(page)
         await wait_state(page, lambda s: s["draft_mode"] == "live", "minimum-viewport live preview")
         await page.wait_for_timeout(100)
         if screenshot:
@@ -200,7 +285,7 @@ async def check_file_pickers(page, dialogs):
     await page.wait_for_timeout(250)
 
     # Actual tab component: arrow keys activate its adjacent mode.
-    await page.mouse.click(460, 93)
+    await select_live_mode(page)
     await wait_state(page, lambda s: s["draft_mode"] == "live", "Live tab")
     await page.wait_for_timeout(100)
     await page.keyboard.press("ArrowRight")
@@ -210,7 +295,7 @@ async def check_file_pickers(page, dialogs):
     async def browse(y, kind, status=200):
         count = len(dialogs.requests)
         async with page.expect_response("**/api/files/choose") as response:
-            await page.mouse.click(946, y)
+            await click_picker(page, y)
         response = await response.value
         assert response.status == status
         await response.json()
@@ -251,7 +336,7 @@ async def check_file_pickers(page, dialogs):
     dialogs.wait = asyncio.Event()
     dialogs.result = str(ROOT / ELF)
     try:
-        await page.mouse.click(946, 325)
+        await click_picker(page, 325)
         await asyncio.wait_for(dialogs.entered.wait(), timeout=5)
         await fill_canvas_input(page, 325, "manually-changed.elf")
         async with page.expect_response("**/api/files/choose") as response:
@@ -268,7 +353,7 @@ async def check_file_pickers(page, dialogs):
     dialogs.wait = asyncio.Event()
     dialogs.result = str(ROOT / ELF)
     try:
-        await page.mouse.click(946, 325)
+        await click_picker(page, 325)
         await asyncio.wait_for(dialogs.entered.wait(), timeout=5)
         await page.keyboard.press("Escape")
         await wait_state(page, lambda s: not s["dialog_open"], "closed native-picker draft")
@@ -387,38 +472,80 @@ async def check_live(page, live, screenshot, sockets, dialogs):
         await click_header(page)
         await wait_state(page, lambda s: s["dialog_open"], "live session dialog")
         await page.wait_for_timeout(250)
-        await page.mouse.click(460, 93)
+        await select_live_mode(page)
         await wait_state(page, lambda s: s["draft_mode"] == "live", "Live tab")
         dialogs.result = str(build)
         async with page.expect_response("**/api/files/choose") as response:
-            await page.mouse.click(946, 191)
+            await click_picker(page, 191)
         assert (await response.value).status == 200
         preview = await wait_state(page, lambda s: s["build_context"] and
                                    s["build_context"]["build_dir"] == label,
                                    "automatic build-folder-only detection")
-        assert preview["draft_request"] == {"mode": "live", "build_dir": label}, preview
+        assert preview["draft_request"] == {
+            "mode": "live", "build_dir": label, "domain": "app",
+            "elf": f"{label}/zephyr/zephyr.elf", "runner": "jlink",
+            "target": "nRF5340_xxAA", "frequency": 4000000,
+        }, preview
         assert preview["build_context"]["runner"] == "jlink", preview
         assert preview["build_context"]["target"] == "nRF5340_xxAA", preview
         assert preview["build_context"]["frequency"] == 4000000, preview
         assert not preview["draft_advanced"], preview
-        # Optional overrides can be enabled, but are not silently submitted when off.
+        # Expanding/collapsing affects visibility, not submitted values.
         await page.mouse.click(700, 235)
-        await wait_state(page, lambda s: s["draft_advanced"], "advanced overrides")
-        await fill_canvas_input(page, 436, "pyocd")
-        await wait_state(page, lambda s: s["draft_request"].get("runner") == "pyocd",
+        await wait_state(page, lambda s: s["draft_advanced"], "Advanced settings expanded")
+        await fill_canvas_input(page, 437, "pyocd")
+        edited = await wait_state(page, lambda s: s["draft_request"].get("runner") == "pyocd"
+                                  and s["build_context"] is not None,
                          "explicit runner override")
+        assert edited["draft_request"]["target"] == "nrf5340_xxaa", edited
+        await page.mouse.click(700, 235)
+        collapsed = await wait_state(page, lambda s: not s["draft_advanced"], "collapse overrides")
+        assert collapsed["draft_request"] == edited["draft_request"], collapsed
+        await page.mouse.click(700, 235)
+        reopened = await wait_state(page, lambda s: s["draft_advanced"], "reopen Advanced")
+        assert reopened["draft_request"] == edited["draft_request"], reopened
+        if screenshot:
+            await page.screenshot(path=str(Path(screenshot).with_name("advanced-settings-expanded.png")),
+                                  full_page=True)
+        async def refresh_settings():
+            # Refresh is inside Advanced, after the probe-clock input.
+            await page.mouse.click(650, 571)
+            await page.wait_for_timeout(100)
+            await page.keyboard.press("Tab")
+            await page.keyboard.press("Space")
+
+        # Refresh must resolve without overrides, then replace the actual inputs.
+        async with page.expect_request("**/api/build/resolve") as refresh:
+            await refresh_settings()
+        assert (await refresh.value).post_data_json == {"mode": "live", "build_dir": label}
+        await wait_state(page, lambda s: s["build_context"] is not None
+                         and s["draft_request"] == preview["draft_request"], "refresh replaces edits")
+        # Failed refresh keeps the current fields.
+        async def failed_resolution(route):
+            await route.fulfill(status=400, json={"error": "test detection failure"})
+        await page.route("**/api/build/resolve", failed_resolution)
+        try:
+            await refresh_settings()
+            failed = await wait_state(page, lambda s: s["draft_error"] == "test detection failure",
+                                      "failed refresh")
+            assert failed["draft_request"] == preview["draft_request"], failed
+        finally:
+            await page.unroute("**/api/build/resolve", failed_resolution)
+        await page.mouse.click(700, 235)
+        await wait_state(page, lambda s: not s["draft_advanced"], "collapse after refresh")
         other = make_build(root, name="other").relative_to(ROOT).as_posix()
         await fill_canvas_input(page, 191, other)
         await wait_state(page, lambda s: not s["draft_advanced"] and
-                         s["draft_request"] == {"mode": "live", "build_dir": other} and
-                         s["build_context"] is not None, "new build resets overrides")
+                         s["draft_request"].get("runner") == "jlink" and
+                         s["draft_request"].get("elf") == f"{other}/zephyr/zephyr.elf" and
+                         s["build_context"] is not None, "new build detects fresh values")
         await page.mouse.click(700, 235)
         restored = await wait_state(page, lambda s: s["draft_advanced"], "new build overrides")
-        assert restored["draft_request"] == {"mode": "live", "build_dir": other}, restored
+        assert restored["draft_request"]["build_dir"] == other, restored
         await page.mouse.click(700, 235)
         await fill_canvas_input(page, 191, label)
         await wait_state(page, lambda s: not s["draft_advanced"] and
-                         s["draft_request"] == {"mode": "live", "build_dir": label} and
+                         s["draft_request"] == preview["draft_request"] and
                          s["build_context"] is not None,
                          "automatic settings restored")
 
@@ -439,7 +566,9 @@ async def check_live(page, live, screenshot, sockets, dialogs):
 
         await page.route("**/api/build/resolve", stale_resolution)
         try:
-            await page.mouse.click(700, 279)  # Refresh the automatic preview.
+            await page.mouse.click(700, 235)
+            await wait_state(page, lambda s: s["draft_advanced"], "expand before refresh")
+            await refresh_settings()
             await asyncio.wait_for(requested.wait(), timeout=5)
             await fill_canvas_input(page, 191, other)
             await wait_state(page, lambda s: s["build_context"] and
@@ -481,6 +610,15 @@ async def check_live(page, live, screenshot, sockets, dialogs):
         assert full["visible_threads"] == 2, full
         assert live.calls == 1
         assert full["indicator"] == "healthy", full
+        assert full["status_shimmer"], full
+        await check_sidebar_session(page)
+        # The host forwards live media changes without restarting acquisition.
+        await page.emulate_media(reduced_motion="reduce")
+        reduced = await wait_state(page, lambda s: s["reduced_motion"], "browser reduced motion")
+        assert not reduced["status_shimmer"], reduced
+        assert reduced["indicator"] == "healthy", reduced
+        await page.emulate_media(reduced_motion="no-preference")
+        await wait_state(page, lambda s: s["status_shimmer"], "Live shimmer restored")
         assert "window_slider_bounds" not in full, "The redundant footer slider was removed."
         # The actual GPUI wheel/fit controls only change the viewport. Repeated
         # source readings and zooming must not allocate or discard chart history.
@@ -567,7 +705,9 @@ async def check_live(page, live, screenshot, sockets, dialogs):
         assert returned["history_seconds"] < 1, returned
         before_warning = await state(page)
         live.warning.set()
-        await wait_state(page, lambda s: s["indicator"] == "warning", "amber read warning")
+        warning = await wait_state(page, lambda s: s["indicator"] == "warning", "amber read warning")
+        assert not warning["status_shimmer"], warning
+        await page.emulate_media(reduced_motion="reduce")
         await page.reload()
         await page.wait_for_selector('html[data-zview-ready="true"]', timeout=90000)
         await wait_state(page, lambda s: s["indicator"] == "warning",
@@ -575,13 +715,20 @@ async def check_live(page, live, screenshot, sockets, dialogs):
         live.resume.set()
         resumed = await wait_state(page, lambda s: s["frames_received"] > before_warning["frames_received"]
                                    and s["indicator"] == "healthy", "green after a valid frame")
+        assert resumed["reduced_motion"] and not resumed["status_shimmer"], resumed
+        assert 0 <= resumed["history_percent"] <= 100, resumed
+        assert "/ 16.0 MiB" in resumed["history_memory_label"], resumed
+        assert "/ 300 s retained" in resumed["history_retention_label"], resumed
+        await page.emulate_media(reduced_motion="no-preference")
+        await wait_state(page, lambda s: s["status_shimmer"], "shimmer after initial reduced motion")
         if screenshot:
             await page.screenshot(path=str(Path(screenshot).with_name("phase3-live-polling.png")),
                                   full_page=True)
             await page.screenshot(path=str(Path(screenshot).with_name("session-header.png")),
-                                  clip={"x": 740, "y": 12, "width": 652, "height": 72})
-        await wait_state(page, lambda s: s["indicator"] == "waiting",
-                         "amber when acquisition stalls despite a connected socket", timeout=8)
+                                  clip={"x": 0, "y": 0, "width": 320, "height": 1000})
+        waiting = await wait_state(page, lambda s: s["indicator"] == "waiting",
+                                   "amber when acquisition stalls despite a connected socket", timeout=8)
+        assert not waiting["status_shimmer"], waiting
         await page.reload()
         await page.wait_for_selector('html[data-zview-ready="true"]', timeout=90000)
         restored = await wait_state(page, lambda s: s["mode"] == "live" and s["status"] == "reading",
@@ -598,6 +745,7 @@ async def check_live(page, live, screenshot, sockets, dialogs):
         assert lost["samples_per_second"] is None, lost
         assert lost["cpu"] == full["cpu"], lost
         assert lost["indicator"] == "failed", lost
+        assert not lost["status_shimmer"], lost
         assert lost["primary_action"] == "Reconnect", lost
         live.lost.clear()
         await click_header(page, primary=True)
@@ -611,13 +759,34 @@ async def check_live(page, live, screenshot, sockets, dialogs):
         stopped = await wait_state(page, lambda s: s["status"] == "stopped", "live disconnect")
         assert stopped["samples_per_second"] is None, stopped
         assert stopped["indicator"] == "idle", stopped
+        assert not stopped["status_shimmer"], stopped
         await page.set_viewport_size({"width": 1000, "height": 680})
         await click_header(page)
         await wait_state(page, lambda s: s["dialog_open"], "minimum-size Live configuration")
         await page.wait_for_timeout(300)
+        restored_draft = await state(page)
+        assert not restored_draft["draft_advanced"], restored_draft
+        assert restored_draft["draft_request"] == preview["draft_request"], restored_draft
         if screenshot:
             await page.screenshot(path=str(Path(screenshot).with_name("phase3-live-dialog.png")),
                                   full_page=True)
+        await page.mouse.click(500, 235)
+        expanded = await wait_state(page, lambda s: s["draft_advanced"],
+                                    "minimum-size Advanced expansion")
+        assert expanded["draft_request"] == restored_draft["draft_request"], expanded
+        if screenshot:
+            await page.screenshot(path=str(Path(screenshot).with_name("advanced-settings-min.png")),
+                                  full_page=True)
+        # Focus the header through the build input and its browse button.
+        # Pointer activation does not automatically focus GPUI buttons.
+        await page.mouse.click(500, 175)
+        await page.wait_for_timeout(100)
+        await page.keyboard.press("Tab")
+        await page.keyboard.press("Tab")
+        await page.keyboard.press("Space")
+        collapsed = await wait_state(page, lambda s: not s["draft_advanced"],
+                                     "keyboard collapse Advanced")
+        assert collapsed["draft_request"] == expanded["draft_request"], collapsed
         await page.keyboard.press("Escape")
         await wait_state(page, lambda s: not s["dialog_open"], "Live dialog dismissal")
         await page.set_viewport_size({"width": 1400, "height": 1000})
@@ -758,7 +927,7 @@ async def check_view_takeover(browser, *, release_before_reply):
         await runner.cleanup()
 
 
-async def check(executable_path=None, screenshot=None):
+async def check(executable_path=None, screenshot=None, sidebar_only=False):
     dialogs = ScriptedDialogs()
     live = ControlledLive()
     runner = web.AppRunner(create_app(
@@ -781,6 +950,15 @@ async def check(executable_path=None, screenshot=None):
                 await page.goto(f"http://127.0.0.1:{port}")
                 await page.wait_for_selector('html[data-zview-ready="true"]', timeout=90000)
                 await wait_state(page, lambda s: s["connected"], "adapter connection")
+                if sidebar_only:
+                    await check_sidebar_live(page, live, f"http://127.0.0.1:{port}")
+                    assert not errors, errors
+                    if screenshot:
+                        await page.screenshot(path=screenshot, full_page=True)
+                    print("Sidebar smoke passed: three viewports, mouse/keyboard popover, "
+                          "history/demand preservation, Configure, Disconnect and Reconnect. "
+                          "Live acquisition uses a controlled worker, not hardware.")
+                    return
                 await click_header(page, primary=True)
                 initial = await wait_state(page, lambda s: s["dialog_open"], "header Connect opens configuration")
                 assert initial["draft_mode"] == "live", initial
@@ -788,6 +966,7 @@ async def check(executable_path=None, screenshot=None):
                 await wait_state(page, lambda s: not s["dialog_open"], "initial draft cancellation")
                 await open_replay(page)
                 ended = await wait_state(page, lambda s: s["status"] == "ended", "replay end")
+                assert not ended["status_shimmer"], ended
                 assert ended["frames_received"] == 20, ended
                 assert ended["buffered_frames"] == 20, ended
                 assert ended["visible_threads"] == 2, ended
@@ -848,7 +1027,7 @@ async def check(executable_path=None, screenshot=None):
                     await page.screenshot(path=screenshot, full_page=True)
                     await page.screenshot(
                         path=str(Path(screenshot).with_name("session-header-stopped.png")),
-                        clip={"x": 740, "y": 12, "width": 652, "height": 72},
+                        clip={"x": 0, "y": 0, "width": 320, "height": page.viewport_size["height"]},
                     )
                 assert not errors, errors
                 print("GPUI Rust/WASM smoke passed: typed frames into the shared UI, "
@@ -862,6 +1041,10 @@ async def check(executable_path=None, screenshot=None):
                       "and different-screen ownership recovery before/after the busy reply. "
                       "Live acquisition uses a controlled worker, not hardware.")
             finally:
+                if screenshot and sys.exc_info()[0] is not None:
+                    await page.screenshot(
+                        path=str(Path(screenshot).with_name("failure.png")), full_page=True
+                    )
                 await browser.close()
     finally:
         await runner.cleanup()
@@ -871,5 +1054,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--executable-path", help="Use an existing Chromium/Chrome.")
     parser.add_argument("--screenshot", help="Optional screenshot output path.")
+    parser.add_argument("--sidebar-only", action="store_true",
+                        help="Run focused sidebar session/layout checks with controlled Live data.")
     args = parser.parse_args()
-    asyncio.run(check(args.executable_path, args.screenshot))
+    asyncio.run(check(args.executable_path, args.screenshot, args.sidebar_only))
