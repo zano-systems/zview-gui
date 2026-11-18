@@ -365,36 +365,6 @@ impl ThreadsApp {
         } else {
             labels[0].clone()
         };
-        let mut tooltip = format!("{status}\n{}", labels[2]);
-        if indicator == SessionIndicator::Waiting {
-            tooltip.push_str("\nNo fresh frame received within the five-second freshness window.");
-        }
-        if let Some(session) = &state.session {
-            if let Some(context) = &session.context {
-                tooltip.push_str(&format!(
-                    "\nBuild: {}\nFirmware image: {}",
-                    context.build_dir, context.domain
-                ));
-            }
-            if let Some(notice) = &session.last_notice {
-                tooltip.push_str(&format!("\nLast acquisition notice: {notice}"));
-            }
-            if let Some(error) = &session.error {
-                tooltip.push_str(&format!("\nError: {error}"));
-            }
-            if session.mode() == Mode::Live {
-                if let Some(timing) = &session.timing {
-                    tooltip.push_str(&format!(
-                        "\n{}\n{}",
-                        timing.polling_label(),
-                        timing.heap_label()
-                    ));
-                }
-                tooltip.push_str("\nRate: successful adapter frames over up to 5 seconds, not lossless target acquisition.");
-            } else {
-                tooltip.push_str("\nDecode progress is not the original recording's sample rate.");
-            }
-        }
         let icon = match indicator {
             SessionIndicator::Busy => Spinner::new()
                 .icon(assets::IconName::LoaderCircle)
@@ -481,6 +451,7 @@ impl ThreadsApp {
                                     "session-header-status",
                                     status,
                                     animate,
+                                    false,
                                 ).flex_shrink_1())
                                 .when(
                                     state.session.is_some()
@@ -490,6 +461,7 @@ impl ThreadsApp {
                                             "session-header-progress",
                                             labels[2].clone(),
                                             animate,
+                                            false,
                                         ).flex_shrink_1())
                                     },
                                 )
@@ -560,11 +532,9 @@ impl ThreadsApp {
                         })),
                         ),
                         )
-                        .child(div().flex().items_center().gap_1().min_w_0()
-                            .child(layout::note("session-header-board", labels[1].clone()).flex_1().flex_shrink_1())
-                            .child(layout::info("session-diagnostics-info", "Session diagnostics", tooltip)))
-                        .child(layout::note("session-header-source",
-                            state.session.as_ref().map(|s| s.elf.clone()).unwrap_or_else(|| labels[3].clone()))
+                        .child(layout::note_with_shimmer("session-header-board", labels[1].clone(), false, false).w_full())
+                        .child(layout::note_with_shimmer("session-header-source",
+                            state.session.as_ref().map(|s| s.elf.clone()).unwrap_or_else(|| labels[3].clone()), false, false)
                             .w_full()
                             .text_ellipsis_start()),
                 )

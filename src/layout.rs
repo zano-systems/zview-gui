@@ -2,6 +2,7 @@
 use crate::{GREEN, MUTED};
 use gpui_kit::component::shimmer::ShimmerText;
 use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 /// Contextual explanations are available on hover and keyboard focus.
@@ -115,7 +116,6 @@ fn info_tooltip(id: SharedString, text: SharedString, cx: &mut App) -> Entity<To
 impl Render for InfoState {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use gpui_kit::component::{Icon, IconName};
-        use gpui_kit::prelude::FluentBuilder;
         let focused = self.focus.is_focused(window);
         let id = self.id.clone();
         div()
@@ -190,14 +190,15 @@ pub(super) fn note(
     id: impl Into<SharedString>,
     text: impl Into<SharedString>,
 ) -> impl IntoElement + Styled {
-    note_with_shimmer(id, text, false)
+    note_with_shimmer(id, text, false, true)
 }
 
-/// Preserve the note's layout and tooltip while optionally highlighting its text.
+/// Keep a compact label, with optional shimmer and a full-value tooltip.
 pub(super) fn note_with_shimmer(
     id: impl Into<SharedString>,
     text: impl Into<SharedString>,
     animate: bool,
+    tooltip: bool,
 ) -> impl IntoElement + Styled {
     let id = id.into();
     let text = text.into();
@@ -220,9 +221,8 @@ pub(super) fn note_with_shimmer(
         .text_xs()
         .text_color(rgb(MUTED))
         .truncate()
-        .tooltip({
-            let text = text.clone();
-            move |window, cx| Tooltip::new(text.clone()).build(window, cx)
+        .when(tooltip, |el| {
+            el.tooltip(move |window, cx| Tooltip::new(text.clone()).build(window, cx))
         })
         .child(content)
 }
