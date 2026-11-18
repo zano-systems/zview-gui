@@ -503,6 +503,44 @@ impl History {
         self.end - self.cutoff()
     }
 
+    /// The budget covers estimated chart-log storage for the current view,
+    /// not total application memory. Visiting another screen resets this cache.
+    #[cfg(any(test, target_family = "wasm"))]
+    pub fn memory_percent(&self) -> f32 {
+        if self.budget == 0 {
+            return 0.;
+        }
+        (self.bytes() as f64 / self.budget as f64 * 100.).clamp(0., 100.) as f32
+    }
+
+    #[cfg(any(test, target_family = "wasm"))]
+    pub fn memory_label(&self) -> String {
+        format!(
+            "{:.1} / {:.1} MiB",
+            self.bytes() as f64 / (1024. * 1024.),
+            self.budget as f64 / (1024. * 1024.)
+        )
+    }
+
+    #[cfg(any(test, target_family = "wasm"))]
+    pub fn retention_label(&self) -> String {
+        format!(
+            "{:.1} / {RETENTION_SECONDS:.0} s retained",
+            self.retained_seconds()
+        )
+    }
+
+    #[cfg(any(test, target_family = "wasm"))]
+    pub fn cache_description(&self) -> String {
+        format!(
+            "Current-view history: estimated chart-log storage, not total application memory.\n{} / {} bytes · {} changes.\nOlder history is discarded at the {:.0}-second retention limit or memory budget. Changing screens resets history.",
+            self.bytes(),
+            self.budget,
+            self.changes(),
+            RETENTION_SECONDS
+        )
+    }
+
     pub fn footer_label(&self) -> String {
         if self.is_empty() {
             return "History · waiting for readings".into();
@@ -620,6 +658,31 @@ fn counts(items: &Option<Vec<String>>) -> Option<Vec<String>> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn cache_presentation_uses_actual_budget_and_resets_with_history() {
+        let mut history = History::default();
+        assert_eq!(history.memory_percent(), 0.);
+        assert_eq!(history.memory_label(), "0.0 / 16.0 MiB");
+        assert_eq!(history.retention_label(), "0.0 / 300 s retained");
+        history.cpu.spans.reserve(32);
+        let used = history.bytes();
+        assert!(used > 0);
+        history.budget = used * 2;
+        assert_eq!(history.memory_percent(), 50.);
+        assert!(
+            history
+                .cache_description()
+                .contains(&format!("{used} / {}", used * 2))
+        );
+        history.budget = used / 2;
+        assert_eq!(history.memory_percent(), 100.);
+        history.budget = 0;
+        assert_eq!(history.memory_percent(), 0.);
+        history.clear();
+        assert_eq!(history.memory_percent(), 0.);
+        assert_eq!(history.memory_label(), "0.0 / 16.0 MiB");
+    }
+
     fn frame(at: f64, cpu: f64) -> Frame {
         let mut f = model::parse(include_str!("../sample.json"))
             .unwrap()
@@ -727,7 +790,9 @@ mod tests {
         h.record(&frame(245., 20.), true);
         assert_eq!(h.origin(), Some(239.));
         assert_eq!(h.retained_seconds(), 6.);
+        assert_eq!(h.retention_label(), "6.0 / 300 s retained");
         h.clear();
+        assert_eq!(h.retention_label(), "0.0 / 300 s retained");
         h.record(&frame(262., 97.), true);
         h.record(&frame(263., 98.), true);
         let series = h.cpu();
