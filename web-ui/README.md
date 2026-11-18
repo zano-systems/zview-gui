@@ -90,9 +90,9 @@ Session context and actions sit below navigation in the left sidebar on every
 inspection screen, freeing the main pane for charts and tables. Status, observed
 progress/rate and right-aligned icon-only actions share a non-wrapping row;
 board/runner or recording context and the ELF path appear below. Long ELF paths
-elide from the beginning. Hover individual labels for their full values; the
-dedicated session info icon provides a wrapped diagnostic summary on hover or
-keyboard focus. The session container itself does not trigger a tooltip.
+elide from the beginning. Session labels and the session container do not trigger
+tooltips. Action buttons retain their descriptive tooltips, and the History cache
+info icon explains its accounting on hover or keyboard focus.
 The adapter sidebar is wider than the standalone sidebar to accommodate this panel.
 Navigation scrolls independently; session content is capped at 45% of the viewport
 height and scrolls on short windows. When collapsed, the sidebar offers a labelled
@@ -101,8 +101,8 @@ Collapsing the sidebar does not disconnect acquisition or reset history.
 
 Acquisition notices appear as dismissible top-right in-app notifications that
 auto-hide after five seconds, rather than expanding the sidebar. Repeated
-identical notices are suppressed; the last notice remains in the session info
-tooltip. Notifications do not repair acquisition or heap-map read failures.
+identical notices are suppressed; the last notice remains available in Configure.
+Notifications do not repair acquisition or heap-map read failures.
 
 **Configure session** (settings icon) opens the draft dialog. Session actions are
 icon-only, with tooltips and accessible names. One directly accessible
