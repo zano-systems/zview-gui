@@ -710,6 +710,7 @@ pub fn adapter_state() -> Result<String, JsValue> {
             "native_picker": adapter.draft.picker,
         });
         state["session_popover_open"] = json!(adapter.session_popover_open);
+        state["sidebar_width"] = json!(this.sidebar_width().as_f32());
         state["session_toggle_focused"] = json!(adapter.session_focus.is_focused(window));
         state["status_shimmer"] = json!(
             adapter

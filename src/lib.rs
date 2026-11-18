@@ -894,8 +894,12 @@ impl ThreadsApp {
         }
     }
 
+    fn sidebar_width(&self) -> Pixels {
+        px(if self.uses_web_adapter() { 300. } else { 230. })
+    }
+
     fn sidebar(&self, _window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let width = px(if self.uses_web_adapter() { 290. } else { 230. });
+        let width = self.sidebar_width();
         let in_objects = matches!(
             self.screen,
             Screen::KernelObjects

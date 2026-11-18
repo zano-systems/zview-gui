@@ -485,7 +485,7 @@ impl ThreadsApp {
                                     "session-header-status",
                                     status,
                                     animate,
-                                ))
+                                ).flex_shrink_1())
                                 .when(
                                     state.session.is_some()
                                         && state.connection == Connection::Connected,
@@ -494,7 +494,7 @@ impl ThreadsApp {
                                             "session-header-progress",
                                             labels[2].clone(),
                                             animate,
-                                        ))
+                                        ).flex_shrink_1())
                                     },
                                 )
                         .child(
