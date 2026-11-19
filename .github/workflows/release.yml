@@ -58,6 +58,8 @@ jobs:
       - name: Test the adapter and the package metadata
         run: |
           python -m pip install -r web-ui/requirements-browser.txt
+          # Native sidecar tests launch isolated Python against the installed package.
+          python -m pip install --no-deps -e .
           python -m pip check
           python -m unittest discover -s web-ui -p 'test_*.py'
       - name: Smoke-test the optimized site with the real adapter

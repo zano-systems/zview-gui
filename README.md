@@ -102,8 +102,50 @@ just web-ui "path with spaces/file.json"
 just web-ui ""
 ```
 
-Bare `cargo run` also uses the small sample. Native typography is unchanged;
-the browser bundles IBM Plex Sans and JetBrains Mono.
+`cargo run -- --offline` uses the small sample without Python. Bare `cargo run`
+starts an adapter-backed native session instead (see below). Native typography
+is unchanged; the browser bundles IBM Plex Sans and JetBrains Mono.
+
+### Native Live and Replay
+
+The native application uses the same Python adapter, session configuration,
+Live/Replay controls and streaming protocol as the browser. Install the adapter
+from this checkout into a separate Python 3.12 environment; no WASM build or
+browser assets are needed for native:
+
+```sh
+python3.12 -m venv .venv-web
+.venv-web/bin/python -m pip install -r web-ui/requirements.txt
+.venv-web/bin/python -m pip install --no-deps -e .
+cargo run -- --python .venv-web/bin/python
+```
+
+Use **Configure session** in the sidebar to choose Live or Replay. Replay needs
+the recording's matching ELF or build; Live needs matching firmware already
+running. Connecting does not flash firmware.
+
+Native starts its own loopback adapter on a free port and shuts it down when
+the window closes. `--python` overrides `ZVIEW_GUI_PYTHON`; otherwise it uses
+`python3`. This environment is separate from the legacy native recording
+exporter's `ZVIEW_PYTHON` environment. Missing dependencies or startup failures
+are reported, not silently replaced with sample data.
+
+The adapter's data root defaults to the working directory. Pass
+`--data-root /path/to/workspace` when the recording, build or ELF is elsewhere.
+The browser adapter's path and symlink restrictions also apply to native.
+To share an explicitly selected running adapter instead:
+
+```sh
+cargo run -- --adapter http://127.0.0.1:8765
+```
+
+Closing native never stops an adapter it attached to. Native and browser clients
+share the existing controlling-client rule: one client controls Live view
+selection at a time. Remote adapter connections are not supported.
+
+Passing a decoded JSON filename keeps standalone offline inspection available:
+`cargo run -- path/to/session.json`. `just ui` still opens the official JSON
+fixture; its behavior and the browser launch commands are unchanged.
 
 ## West integration (`west zview-gui`)
 
@@ -197,6 +239,28 @@ zview-gui -d path/to/build
 zview-gui --data-root path/to/recordings
 ```
 
+To install the **current checkout** like a release, but labelled as a development
+version, use a dedicated Python 3.12 virtual environment:
+
+```sh
+just web-setup                          # once, for the WASM build tools
+python3.12 -m venv .venv-web
+just web-install-dev .venv-web/bin/python
+.venv-web/bin/zview-gui --version         # zview-gui 0.4.1.dev0
+.venv-web/bin/zview-gui -d path/to/build
+```
+
+This rebuilds the optimized browser UI and pip-installs a regular wheel with
+the same dependencies, entry point and bundled site as a release. The version
+is the checkout's release version plus `.dev0` (pip's spelling of `-dev`).
+It does not publish to PyPI or change tracked version files. Re-running replaces
+the previous development install and reinstalls its dependencies; use a dedicated
+environment. The wheel is retained in `target/dev-dist/`.
+With a virtual environment activated, `just web-install-dev` uses its `python3`.
+On Windows, pass `.venv-web/Scripts/python.exe`.
+The west module still expects its release pin and may warn about the dev version;
+`west packages pip --install` restores the pinned release.
+
 ### Browser behavior and static hosting
 
 The launcher prints a local URL, opens the browser, and serves only generated
@@ -231,7 +295,7 @@ cargo fmt --check
 cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 node --test web/documents.test.mjs
-python3 -m unittest discover -s scripts -p test_web_ui.py -v
+python3 -m unittest discover -s scripts -p 'test_*.py' -v
 cargo +nightly clippy --locked --lib --target wasm32-unknown-unknown -- -D warnings
 just web-build
 ```
@@ -239,7 +303,8 @@ just web-build
 The full-data heap-map test runs in the normal Rust suite without Python.
 For recording-import integration tests, install the pinned ZView backend and
 dependencies from [CI](.github/workflows/ci.yml), set `ZVIEW_PYTHON` to that
-interpreter, and run `cargo test --locked -- --include-ignored`. CI also
+interpreter, and set `ZVIEW_GUI_PYTHON` to the separate adapter environment
+described above before running `cargo test --locked -- --include-ignored`. CI also
 regenerates the official fixture and compares it with the committed JSON.
 
 Builds and headless tests do not replace browser/native visual checks. Inspect

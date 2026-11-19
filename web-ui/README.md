@@ -30,6 +30,16 @@ python3.12 -m venv .venv-web
 .venv-web/bin/zview-gui --no-open      # or: .venv-web/bin/python -m zview_gui
 ```
 
+The native Rust application also uses this adapter and the shared session
+controls. After the editable install above, run
+`cargo run -- --python .venv-web/bin/python` from the repository root.
+Unlike browser serving, native does not require the WASM tools or a built site.
+Its internal `zview_gui.native_host` process starts the existing server on a
+free loopback port, reports readiness to the parent, and shuts down on parent
+stdin closure. Browser CLI and west launch behavior are unchanged. See the main
+README's [native workflow](../README.md#native-live-and-replay) for attachment,
+data-root and standalone JSON options.
+
 An editable install serves the checkout's `target/web`; an installed wheel
 serves the site packaged in it, and `--site DIR` serves any other build. Without
 `-d`, the command serves Replay from `--data-root` (default: the current

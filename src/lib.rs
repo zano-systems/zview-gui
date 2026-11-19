@@ -12,10 +12,11 @@ mod model;
 mod msgq_detail;
 mod mutex_detail;
 #[cfg(not(target_family = "wasm"))]
+mod native_adapter;
+#[cfg(not(target_family = "wasm"))]
 mod recording;
 mod semaphore_detail;
 mod session;
-#[cfg(any(test, target_family = "wasm"))]
 mod session_settings;
 mod slab_detail;
 mod step_area_chart;
@@ -27,7 +28,6 @@ mod time_series_chart;
 mod wait_queue;
 #[cfg(target_family = "wasm")]
 mod web;
-#[cfg(target_family = "wasm")]
 mod web_adapter;
 mod workq_activity;
 mod workq_detail;
@@ -97,7 +97,6 @@ enum Screen {
 }
 
 impl Screen {
-    #[cfg(any(test, target_family = "wasm"))]
     fn live_view(
         &self,
         heap: Option<adapter_protocol::HeapIdentity>,
@@ -232,7 +231,6 @@ struct ThreadsApp {
     object_search: Entity<InputState>,
     object_kind: Option<kernel_model::Kind>,
     _object_search_subscription: Subscription,
-    #[cfg(target_family = "wasm")]
     adapter: web_adapter::Controls,
 }
 
@@ -247,8 +245,19 @@ impl Drop for ThreadsApp {
 impl ThreadsApp {
     #[cfg(not(target_family = "wasm"))]
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let source = std::env::args_os().nth(1).map(PathBuf::from);
-        Self::from_source(source, window, cx)
+        match native_adapter::Options::parse(std::env::args_os().skip(1)) {
+            Ok(options) if options.offline => Self::from_source(options.source, window, cx),
+            Ok(options) => {
+                let frames = model::parse(r#"{"threads":[]}"#).expect("valid empty frame");
+                let mut app = Self::from_frames(frames, None, None, window, cx);
+                app.start_native_adapter(options, cx);
+                app
+            }
+            Err(error) => {
+                let frames = model::parse(r#"{"threads":[]}"#).expect("valid empty frame");
+                Self::from_frames(frames, None, Some(error), window, cx)
+            }
+        }
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -319,7 +328,6 @@ impl ThreadsApp {
             object_search,
             object_kind: None,
             _object_search_subscription: object_search_subscription,
-            #[cfg(target_family = "wasm")]
             adapter: web_adapter::Controls::new(window, cx),
         };
         if app.frames[0].is_live {
@@ -377,7 +385,6 @@ impl ThreadsApp {
             .iter()
             .map(|h| h.label())
             .collect();
-        #[cfg(target_family = "wasm")]
         let items = self
             .adapter
             .state
@@ -689,14 +696,7 @@ impl ThreadsApp {
     }
 
     fn cpu_averaging_controls(&self, _cx: &Context<Self>) -> Option<AnyElement> {
-        #[cfg(target_family = "wasm")]
-        {
-            self.adapter_usage_controls(_cx)
-        }
-        #[cfg(not(target_family = "wasm"))]
-        {
-            None
-        }
+        self.adapter_usage_controls(_cx)
     }
 
     fn show_overview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -867,18 +867,10 @@ impl ThreadsApp {
     }
 
     fn uses_web_adapter(&self) -> bool {
-        #[cfg(target_family = "wasm")]
-        {
-            self.adapter.available
-        }
-        #[cfg(not(target_family = "wasm"))]
-        {
-            false
-        }
+        self.adapter.available
     }
 
     fn object_count(&self, kind: Option<kernel_model::Kind>) -> usize {
-        #[cfg(target_family = "wasm")]
         let inventory = self
             .adapter
             .state
@@ -886,8 +878,6 @@ impl ThreadsApp {
             .as_ref()
             .filter(|session| session.mode() == adapter_protocol::Mode::Live)
             .and_then(|session| session.inventory.as_ref());
-        #[cfg(not(target_family = "wasm"))]
-        let inventory = None;
         object_count(&self.frames[self.frame], inventory, kind)
     }
 
@@ -1052,16 +1042,7 @@ impl ThreadsApp {
                             .border_color(rgb(BORDER))
                             .bg(rgb(BG))
                     })
-                    .children({
-                        #[cfg(target_family = "wasm")]
-                        {
-                            self.adapter_session_controls(_window, cx)
-                        }
-                        #[cfg(not(target_family = "wasm"))]
-                        {
-                            None::<AnyElement>
-                        }
-                    })
+                    .children(self.adapter_session_controls(_window, cx))
                     .when(!self.collapsed && !self.uses_web_adapter(), |el| {
                         let mode = "offline";
                         el.child(
@@ -1475,12 +1456,8 @@ impl Render for ThreadsApp {
         // Reconcile before rendering or publishing the live view so frame and
         // inventory changes cannot leave an invisible type filter selected.
         self.sync_object_kind();
-        #[cfg(target_family = "wasm")]
         self.sync_live_view(cx);
-        #[cfg(target_family = "wasm")]
         let live_loading = self.live_view_loading(cx);
-        #[cfg(not(target_family = "wasm"))]
-        let live_loading = false;
         if !live_loading {
             self.sync_missing_notice(window, cx);
         }
@@ -1566,10 +1543,7 @@ impl Render for ThreadsApp {
                                             .collapsed(self.collapsed)
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.collapsed = !this.collapsed;
-                                                #[cfg(target_family = "wasm")]
-                                                {
-                                                    this.adapter.session_popover_open = false;
-                                                }
+                                                this.adapter.session_popover_open = false;
                                                 cx.notify();
                                             })),
                                     )
@@ -1598,18 +1572,10 @@ impl Render for ThreadsApp {
                         el.child(div().p_3().flex_shrink_0().rounded_md().bg(rgb(0x492c3c))
                             .child(layout::note("session-error", error)))
                     })
-                    .children({
-                        #[cfg(target_family = "wasm")]
-                        { self.adapter_display_notice() }
-                        #[cfg(not(target_family = "wasm"))]
-                        { None::<AnyElement> }
-                    })
+                    .children(self.adapter_display_notice())
                     .when(live_loading && self.screen != Screen::KernelObjects, |el| {
-                        #[cfg(target_family = "wasm")]
-                        { el.child(div().flex_1().min_h_0().p_4()
-                            .child(layout::note("live-view-loading", self.live_view_loading_note()))) }
-                        #[cfg(not(target_family = "wasm"))]
-                        { el }
+                        el.child(div().flex_1().min_h_0().p_4()
+                            .child(layout::note("live-view-loading", self.live_view_loading_note())))
                     })
                     .when(self.loading.is_some(), |el| {
                         el.child(

@@ -505,7 +505,6 @@ impl History {
 
     /// The budget covers estimated chart-log storage for the current view,
     /// not total application memory. Visiting another screen resets this cache.
-    #[cfg(any(test, target_family = "wasm"))]
     pub fn memory_percent(&self) -> f32 {
         if self.budget == 0 {
             return 0.;
@@ -513,7 +512,6 @@ impl History {
         (self.bytes() as f64 / self.budget as f64 * 100.).clamp(0., 100.) as f32
     }
 
-    #[cfg(any(test, target_family = "wasm"))]
     pub fn memory_label(&self) -> String {
         format!(
             "{:.1} / {:.1} MiB",
@@ -522,7 +520,6 @@ impl History {
         )
     }
 
-    #[cfg(any(test, target_family = "wasm"))]
     pub fn retention_label(&self) -> String {
         format!(
             "{:.1} / {RETENTION_SECONDS:.0} s retained",
@@ -530,7 +527,6 @@ impl History {
         )
     }
 
-    #[cfg(any(test, target_family = "wasm"))]
     pub fn cache_description(&self) -> String {
         format!(
             "Current-view history: estimated chart-log storage, not total application memory.\n{} / {} bytes · {} changes.\nOlder history is discarded at the {:.0}-second retention limit or memory budget. Changing screens resets history.",

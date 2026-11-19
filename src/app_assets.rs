@@ -15,10 +15,10 @@ assets::icon_assets!(
     ]
 );
 
-// Embed web controls too: no CDN requests or asset base-path assumptions.
-#[cfg(any(test, target_family = "wasm"))]
+// Shared controls need the same embedded icons on native and web. The native
+// toolkit's default bundle does not include every session action (e.g. Unplug).
 assets::icon_assets!(
-    WebIcons,
+    ControlIcons,
     [
         ArrowDown,
         ArrowLeft,
@@ -78,13 +78,16 @@ impl AssetSource for AppAssets {
         if let Some(bytes) = ExtraIcons.load(path)? {
             return Ok(Some(bytes));
         }
+        if let Some(bytes) = ControlIcons.load(path)? {
+            return Ok(Some(bytes));
+        }
         #[cfg(not(target_family = "wasm"))]
         {
             assets::Assets.load(path)
         }
         #[cfg(target_family = "wasm")]
         {
-            WebIcons.load(path)
+            Ok(None)
         }
     }
 
@@ -92,7 +95,8 @@ impl AssetSource for AppAssets {
         #[cfg(not(target_family = "wasm"))]
         let mut paths = assets::Assets.list(path)?;
         #[cfg(target_family = "wasm")]
-        let mut paths = WebIcons.list(path)?;
+        let mut paths = Vec::new();
+        paths.extend(ControlIcons.list(path)?);
         paths.extend(ExtraIcons.list(path)?);
         paths.sort();
         paths.dedup();
@@ -102,7 +106,7 @@ impl AssetSource for AppAssets {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppAssets, AssetSource, WebIcons};
+    use super::{AppAssets, AssetSource, ControlIcons};
 
     #[test]
     fn web_search_controls_and_empty_state_icons_are_bundled() {
@@ -122,7 +126,31 @@ mod tests {
             "icons/loader-circle.svg",
             "icons/circle-alert.svg",
         ] {
-            assert!(WebIcons.load(path).unwrap().is_some(), "{path}");
+            assert!(ControlIcons.load(path).unwrap().is_some(), "{path}");
+        }
+    }
+
+    #[test]
+    fn session_action_and_status_icons_load_through_the_application_asset_source() {
+        for path in [
+            "icons/plug.svg",
+            "icons/unplug.svg",
+            "icons/rotate-cw.svg",
+            "icons/folder.svg",
+            "icons/pause.svg",
+            "icons/settings.svg",
+            "icons/loader-circle.svg",
+            "icons/circle-alert.svg",
+            "icons/circle-dashed.svg",
+        ] {
+            let bytes = AppAssets.load(path).unwrap().unwrap_or_else(|| {
+                panic!("Session icon missing from the application asset source: {path}")
+            });
+            assert!(!bytes.is_empty(), "{path}");
+            assert!(
+                AppAssets.list("icons/").unwrap().iter().any(|p| p == path),
+                "{path}"
+            );
         }
     }
 

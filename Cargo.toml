@@ -24,6 +24,12 @@ gloo-net = { version = "=0.6.0", default-features = false, features = ["http", "
 gloo-timers = { version = "=0.3.0", features = ["futures"] }
 web-sys = { version = "0.3", features = ["Location", "Window"] }
 
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+smol = "2"
+tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
+ureq = { version = "3", default-features = false, features = ["json"] }
+uuid = { version = "1", features = ["v4"] }
+
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 # Match Kit 0.7.3's GPUI snapshot. Enabling Kit's test-support feature also
 # resolves its optional Fast backend, whose pinned dependencies conflict here.
