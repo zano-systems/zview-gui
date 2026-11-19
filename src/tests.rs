@@ -7,8 +7,6 @@ use gpui_kit::init;
 mod heap_map_tests;
 #[path = "layout_tests.rs"]
 mod layout_tests;
-#[path = "session_tests.rs"]
-mod session_tests;
 #[path = "workq_activity_tests.rs"]
 mod workq_activity_tests;
 
@@ -109,10 +107,10 @@ fn thread_columns_sort_rows_and_keyboard_navigation_in_display_order(cx: &mut Te
 }
 
 #[gpui_kit::test]
-fn standalone_footer_keeps_source_and_playback_or_live_history(cx: &mut TestAppContext) {
+fn shared_footer_keeps_playback_controls_out_of_live_sessions(cx: &mut TestAppContext) {
     let (app, mut cx) = setup(cx);
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(cx.debug_bounds("session-source").is_some());
+    assert!(cx.debug_bounds("session-source").is_none());
     for control in [
         "previous",
         "play-pause",
@@ -128,8 +126,8 @@ fn standalone_footer_keeps_source_and_playback_or_live_history(cx: &mut TestAppC
         });
         window.draw(cx).clear(cx);
     });
-    assert!(cx.debug_bounds("session-source").is_some());
-    assert!(cx.debug_bounds("live-history-status").is_some());
+    assert!(cx.debug_bounds("session-source").is_none());
+    assert!(cx.debug_bounds("live-history-status").is_none());
     assert!(cx.debug_bounds("play-pause").is_none());
 }
 
@@ -226,8 +224,9 @@ fn live_charts_use_wheel_and_reset_without_a_footer_slider(cx: &mut TestAppConte
         });
     }
     cx.simulate_resize(size(px(1000.), px(680.)));
-    let history = cx.debug_bounds("live-history-status").unwrap();
-    assert!(history.left() >= px(0.) && history.right() <= px(1000.));
+    let footer = cx.debug_bounds("session-footer").unwrap();
+    assert!(footer.left() >= px(0.) && footer.right() <= px(1000.));
+    assert!(cx.debug_bounds("live-history-status").is_none());
 }
 
 #[test]
@@ -317,28 +316,23 @@ fn screens_request_only_their_displayed_live_groups_and_rows() {
 }
 
 #[test]
-fn browser_help_only_describes_supported_file_actions() {
+fn browser_help_describes_required_adapter_and_shared_replay() {
     let text = super::help_text(true);
-    assert!(text.contains("already-decoded JSON"));
-    assert!(text.contains("read locally without uploading"));
-    assert!(text.contains("Select a changed file again"));
+    assert!(text.contains("required Python adapter"));
+    assert!(text.contains("matching ELF or build"));
+    assert!(text.contains("local to the adapter"));
+    assert!(text.contains("reported in the UI and retried"));
     assert!(text.contains("Heap maps show captured chunks"));
-    for unsupported in [
-        "Open recording",
-        ".ndjson.gz",
-        "ZVIEW_PYTHON",
-        "Reload repeats",
-    ] {
-        assert!(!text.contains(unsupported), "{unsupported}");
-    }
 }
 
 #[test]
-fn native_help_keeps_recording_import_and_reload_instructions() {
+fn native_help_requires_adapter_and_describes_shared_replay_controls() {
     let text = super::help_text(false);
-    assert!(text.contains("Open recording"));
-    assert!(text.contains("ZVIEW_PYTHON"));
-    assert!(text.contains("Reload repeats the import"));
+    assert!(text.contains("Python adapter is required"));
+    assert!(text.contains("Configure session"));
+    assert!(text.contains("Stop decoding"));
+    assert!(!text.contains("Open recording"));
+    assert!(!text.contains("ZVIEW_PYTHON"));
     assert!(text.contains("Heap maps show captured chunks"));
 }
 
@@ -1507,6 +1501,22 @@ fn mutex_detail_navigation_history_and_partial_data(cx: &mut TestAppContext) {
     app.read_with(&cx, |app, _| assert_eq!(app.screen, Screen::KernelObjects));
 }
 
+// File fixtures feed shared rendering tests directly, never a native import UI.
+impl ThreadsApp {
+    fn load(
+        &mut self,
+        path: std::path::PathBuf,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        match super::model::load(&path) {
+            Ok(frames) => self.install(frames, path, None, window, cx),
+            Err(error) => self.error = Some(error),
+        }
+        cx.notify();
+    }
+}
+
 pub(super) fn setup(cx: &mut TestAppContext) -> (Entity<ThreadsApp>, VisualTestContext) {
     cx.update(|cx| {
         init(cx);
@@ -1515,7 +1525,9 @@ pub(super) fn setup(cx: &mut TestAppContext) -> (Entity<ThreadsApp>, VisualTestC
     });
     let mut app = None;
     let window = cx.open_window(size(px(1480.), px(940.)), |window, cx| {
-        let view = cx.new(|cx| ThreadsApp::from_source(None, window, cx));
+        let frames =
+            super::model::parse(include_str!("../sample.json")).expect("valid captured fixture");
+        let view = cx.new(|cx| ThreadsApp::from_frames(frames, None, None, window, cx));
         app = Some(view.clone());
         Root::new(view, window, cx)
     });
@@ -1536,28 +1548,19 @@ pub(super) fn setup(cx: &mut TestAppContext) -> (Entity<ThreadsApp>, VisualTestC
     (app, cx)
 }
 
-fn open_session_menu(cx: &mut VisualTestContext) {
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let trigger = cx.debug_bounds("session-menu-trigger").unwrap().center();
-    cx.simulate_click(trigger, Modifiers::default());
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(cx.debug_bounds("session-menu-source").is_some());
-}
-
-fn choose_open_recording(cx: &mut VisualTestContext) {
-    open_session_menu(cx);
-    // Kit first selects the heading, then skips non-interactive/disabled entries.
-    cx.simulate_keystrokes("down down down enter");
-}
-
 #[gpui_kit::test]
-fn opening_and_reloading_documents_start_paused_at_first_frame(cx: &mut TestAppContext) {
+fn installing_captured_frames_starts_paused_at_first_frame(cx: &mut TestAppContext) {
     let (_, mut cx) = setup(cx);
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for file in ["sample.json", "test-data/mutexes.json"] {
+    for file in [
+        "test-data/zview-bench-60s/session.json",
+        "test-data/zview-bench-60s/session-with-heap-maps.json",
+    ] {
         cx.update(|window, cx| {
             let path = root.join(file);
-            let view = cx.new(|cx| ThreadsApp::from_source(Some(path.clone()), window, cx));
+            let frames = super::model::load(&path).expect("valid captured fixture");
+            let view =
+                cx.new(|cx| ThreadsApp::from_frames(frames, Some(path.clone()), None, window, cx));
             view.update(cx, |app, cx| {
                 assert!(app.error.is_none());
                 assert_eq!(app.frame, 0);
@@ -1571,156 +1574,6 @@ fn opening_and_reloading_documents_start_paused_at_first_frame(cx: &mut TestAppC
             });
         });
     }
-}
-
-#[gpui_kit::test]
-fn recording_prompts_can_be_cancelled_without_changing_session(cx: &mut TestAppContext) {
-    let (app, mut cx) = setup(cx);
-    choose_open_recording(&mut cx);
-    assert!(cx.did_prompt_for_paths());
-    cx.simulate_path_prompt_response(|options| {
-        assert!(options.prompt.as_ref().unwrap().contains("recording"));
-        None
-    });
-    cx.run_until_parked();
-    assert!(!cx.did_prompt_for_paths());
-    choose_open_recording(&mut cx);
-    cx.simulate_path_prompt_response(|_| Some(vec!["capture.ndjson.gz".into()]));
-    cx.run_until_parked();
-    assert!(cx.did_prompt_for_paths());
-    cx.simulate_path_prompt_response(|options| {
-        assert!(options.prompt.as_ref().unwrap().contains("ELF"));
-        None
-    });
-    cx.run_until_parked();
-    app.read_with(&cx, |app, _| {
-        assert!(app.loading.is_none());
-        assert!(app.error.is_none());
-        assert!(app.source.is_none());
-        assert_eq!(app.frame, 1);
-    });
-}
-
-#[gpui_kit::test]
-fn async_import_is_atomic_cancellable_and_recovers_after_failure(cx: &mut TestAppContext) {
-    use std::path::PathBuf;
-    let (app, mut cx) = setup(cx);
-    cx.update(|_, cx| {
-        app.update(cx, |app, cx| {
-            app.screen = Screen::KernelObjects;
-            app.start_load(PathBuf::from("missing-phase10.json"), None, cx);
-        });
-    });
-    cx.run_until_parked();
-    app.read_with(&cx, |app, _| {
-        assert!(app.error.is_some());
-        assert!(app.loading.is_none());
-        assert_eq!(app.frame, 1);
-        assert_eq!(app.screen, Screen::KernelObjects);
-    });
-    let sample = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sample.json");
-    cx.update(|_, cx| {
-        app.update(cx, |app, cx| {
-            app.start_load(sample.clone(), None, cx);
-            app.loading
-                .as_ref()
-                .unwrap()
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-        });
-    });
-    cx.run_until_parked();
-    app.read_with(&cx, |app, _| {
-        assert!(app.loading.is_none());
-        assert!(app.source.is_none());
-        assert_eq!(app.frame, 1);
-        assert_eq!(app.screen, Screen::KernelObjects);
-    });
-    cx.update(|_, cx| app.update(cx, |app, cx| app.start_load(sample.clone(), None, cx)));
-    cx.run_until_parked();
-    app.read_with(&cx, |app, _| {
-        assert!(app.error.is_none());
-        assert_eq!(app.source.as_ref(), Some(&sample));
-        assert_eq!(app.screen, Screen::Overview);
-        assert!(!app.playing);
-    });
-}
-
-#[gpui_kit::test]
-fn loading_banner_cancel_button_and_small_layout_keep_session_available(cx: &mut TestAppContext) {
-    let (app, mut cx) = setup(cx);
-    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    cx.simulate_resize(size(px(860.), px(700.)));
-    cx.update(|window, cx| {
-        app.update(cx, |app, cx| {
-            app.loading = Some(cancel.clone());
-            cx.notify();
-        });
-        window.draw(cx).clear(cx);
-    });
-    assert!(cx.debug_bounds("session-loading").is_some());
-    let button = cx.debug_bounds("cancel-load").unwrap();
-    assert!(button.right() <= px(860.));
-    cx.simulate_click(button.center(), Modifiers::default());
-    assert!(cancel.load(std::sync::atomic::Ordering::Relaxed));
-    app.read_with(&cx, |app, _| {
-        assert_eq!(app.frame, 1);
-        assert!(app.source.is_none());
-    });
-}
-
-#[gpui_kit::test]
-#[ignore = "Requires Python with ZView dependencies; set ZVIEW_PYTHON"]
-fn direct_recording_opens_via_prompts_and_reloads_with_its_elf(cx: &mut TestAppContext) {
-    let fixture =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test-data/zview-bench-60s");
-    let (app, mut cx) = setup(cx);
-    choose_open_recording(&mut cx);
-    cx.simulate_path_prompt_response(|_| Some(vec![fixture.join("capture.ndjson.gz")]));
-    cx.run_until_parked();
-    cx.simulate_path_prompt_response(|_| Some(vec![fixture.join("zephyr.elf")]));
-    cx.run_until_parked();
-    app.read_with(&cx, |app, _| {
-        assert!(app.error.is_none(), "{:?}", app.error);
-        assert_eq!(app.frames.len(), 578);
-        assert_eq!(app.frame, 0);
-        assert_eq!(app.recording_elf, Some(fixture.join("zephyr.elf")));
-        assert!(!app.playing);
-        assert!(app.frames[288].heaps[0].chunks.is_some());
-    });
-    cx.update(|window, cx| {
-        app.update(cx, |app, cx| {
-            app.step(true, window, cx);
-        });
-    });
-    open_session_menu(&mut cx);
-    cx.simulate_keystrokes("down down down down enter");
-    cx.run_until_parked();
-    app.read_with(&cx, |app, _| {
-        assert!(app.error.is_none(), "{:?}", app.error);
-        assert_eq!(app.frames.len(), 578);
-        assert_eq!(app.frame, 0);
-    });
-    // Failed decoding must not replace the recording or stop its playback.
-    cx.update(|window, cx| {
-        app.update(cx, |app, cx| {
-            app.show_kernel_objects(Some(super::kernel_model::Kind::Heap), window, cx);
-            app.toggle_playback(window, cx);
-            app.start_load(
-                fixture.join("missing.ndjson.gz"),
-                app.recording_elf.clone(),
-                cx,
-            );
-        });
-    });
-    cx.run_until_parked();
-    app.read_with(&cx, |app, _| {
-        assert!(app.error.is_some());
-        assert!(app.playing);
-        assert_eq!(app.screen, Screen::KernelObjects);
-        assert_eq!(app.object_kind, Some(super::kernel_model::Kind::Heap));
-        assert_eq!(app.source, Some(fixture.join("capture.ndjson.gz")));
-        assert_eq!(app.recording_elf, Some(fixture.join("zephyr.elf")));
-    });
 }
 
 #[gpui_kit::test]
@@ -1907,7 +1760,7 @@ fn assert_breadcrumb_hover(cx: &mut VisualTestContext, selector: &'static str) {
     );
 }
 
-fn activate_breadcrumb_with_keyboard(
+pub(super) fn activate_breadcrumb_with_keyboard(
     cx: &mut VisualTestContext,
     selector: &'static str,
     key: &str,
@@ -2430,8 +2283,8 @@ fn sidebar_type_choices_filter_without_changing_session(cx: &mut TestAppContext)
     let (app, mut cx) = setup(cx);
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(
-        cx.debug_bounds("object-type-all").is_none(),
-        "submenu starts closed"
+        cx.debug_bounds("object-type-all").is_some(),
+        "native kernel navigation starts expanded"
     );
     open_kernel_objects(&app, &mut cx);
     assert!(cx.debug_bounds("object-type-tabs").is_none());

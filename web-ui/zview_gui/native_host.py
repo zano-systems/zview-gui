@@ -42,6 +42,7 @@ async def run(data_root, ready_stream):
     await serve(
         data_root, port=0, period=0.1, heap_period=0.1, heap_cooldown=0.0,
         ready=ready, stop=stop, console=Console(stream=sys.stderr, color=False),
+        announce_browser=False,
     )
 
 

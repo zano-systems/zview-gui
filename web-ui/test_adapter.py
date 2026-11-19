@@ -150,7 +150,7 @@ class AdapterTests(AioHTTPTestCase):
         await self.stop()
 
     async def test_security_and_static_frontend(self):
-        for route in ("/", "/main.js", "/documents.mjs", "/pkg/zview_desktop.js"):
+        for route in ("/", "/main.js", "/startup.mjs", "/pkg/zview_desktop.js"):
             response = await self.client.get(route)
             self.assertEqual(response.status, 200)
             self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")

@@ -1,16 +1,52 @@
 //! Native GPUI host for the shared session UI; browser startup stays in web_adapter.
 use super::*;
 
+/// Consume the CLI request only once, after the first valid session snapshot.
+/// Transport reconnects must not restart acquisition or replace another session.
+fn take_live_start(
+    build_dir: &mut Option<String>,
+    state: &crate::adapter_protocol::ClientState,
+) -> Result<Option<serde_json::Value>, String> {
+    if state.connection != Connection::Connected {
+        return Ok(None);
+    }
+    let Some(build_dir) = build_dir.take() else {
+        return Ok(None);
+    };
+    if !state.can_open() {
+        return Err(
+            "Live auto-connect skipped: the adapter already has an active or pending session. Use the session controls to connect.".into(),
+        );
+    }
+    Ok(Some(json!({ "build_dir": build_dir })))
+}
+
 impl ThreadsApp {
     pub(crate) fn start_native_adapter(
         &mut self,
-        options: crate::native_adapter::Options,
+        mut options: crate::native_adapter::Options,
         cx: &mut Context<Self>,
     ) {
         self.adapter.available = true;
+        self.adapter.state.connection = Connection::Connecting;
         self.error = None;
+        let mut live_build = options.build_dir.take();
+        self.adapter.startup = Some(crate::native_adapter::Startup::new(options));
         self.adapter.connection_task = Some(cx.spawn(async move |this, cx| {
-            let started = smol::unblock(move || options.start()).await;
+            let started = loop {
+                let result = this.update(cx, |app, _| {
+                    let result = app.adapter.startup.as_mut().and_then(|startup| startup.try_finish());
+                    if result.is_some() {
+                        app.adapter.startup.take();
+                    }
+                    result
+                });
+                match result {
+                    Ok(Some(result)) => break result,
+                    Err(_) => return,
+                    Ok(None) => adapter_delay(50).await,
+                }
+            };
             let endpoint = match started {
                 Ok((endpoint, process)) => {
                     if this
@@ -67,7 +103,17 @@ impl ThreadsApp {
                                         return Err("Expected adapter snapshot.".into());
                                     }
                                     this.update_in(cx, |app, window, cx| {
-                                        app.accept_adapter(message, window, cx)
+                                        app.accept_adapter(message, window, cx)?;
+                                        match take_live_start(&mut live_build, &app.adapter.state) {
+                                            Ok(Some(body)) => app.adapter_command("/api/session/live", body, cx),
+                                            Ok(None) => {}
+                                            Err(error) => {
+                                                eprintln!("{error}");
+                                                app.error = Some(error);
+                                                cx.notify();
+                                            }
+                                        }
+                                        Ok(())
                                     })
                                     .map_err(|e| e.to_string())?
                                 });
@@ -105,5 +151,41 @@ impl ThreadsApp {
                 adapter_delay(1500).await;
             }
         }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::take_live_start;
+    use crate::adapter_protocol::{ClientState, Connection};
+    use serde_json::json;
+
+    #[test]
+    fn cli_live_start_waits_for_snapshot_and_is_not_repeated_after_reconnect() {
+        let mut build = Some("project build".to_string());
+        let mut state = ClientState::default();
+        assert_eq!(take_live_start(&mut build, &state).unwrap(), None);
+        assert_eq!(build.as_deref(), Some("project build"));
+        state.connection = Connection::Connected;
+        assert_eq!(
+            take_live_start(&mut build, &state).unwrap(),
+            Some(json!({"build_dir": "project build"}))
+        );
+        state.connection = Connection::Retrying;
+        assert_eq!(take_live_start(&mut build, &state).unwrap(), None);
+        state.connection = Connection::Connected;
+        assert_eq!(take_live_start(&mut build, &state).unwrap(), None);
+    }
+
+    #[test]
+    fn no_build_argument_does_not_open_a_session_or_replace_a_pending_one() {
+        let mut state = ClientState::default();
+        state.connection = Connection::Connected;
+        assert_eq!(take_live_start(&mut None, &state).unwrap(), None);
+        state.pending = true;
+        let mut build = Some("build".to_string());
+        assert!(take_live_start(&mut build, &state).is_err());
+        state.pending = false;
+        assert_eq!(take_live_start(&mut build, &state).unwrap(), None);
     }
 }

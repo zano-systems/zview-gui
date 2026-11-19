@@ -15,7 +15,7 @@ class SidebarToggleTests(unittest.IsolatedAsyncioTestCase):
         current = {
             "sidebar_collapsed": collapsed,
             "sidebar_width": 300,
-            "session_panel_bounds": {"height": 86},
+            "sidebar_toggle_bounds": {"x": 12, "y": 4, "width": 24, "height": 24},
         }
         page = SimpleNamespace(
             mouse=SimpleNamespace(move=AsyncMock(), click=AsyncMock()),
@@ -28,7 +28,7 @@ class SidebarToggleTests(unittest.IsolatedAsyncioTestCase):
         async def wait_for_state(page, predicate, description):
             if description == "sidebar layout before toggle":
                 self.assertFalse(predicate({
-                    **current, "session_panel_bounds": {"height": 0},
+                    **current, "sidebar_toggle_bounds": {"width": 0},
                 }))
                 self.assertTrue(predicate(current))
                 return current
@@ -44,7 +44,7 @@ class SidebarToggleTests(unittest.IsolatedAsyncioTestCase):
             try:
                 await asyncio.wait_for(waiting.wait(), timeout=1)
                 self.assertFalse(task.done(), "The helper must wait for the state change.")
-                page.mouse.click.assert_awaited_once_with(81 if collapsed else 327, 28)
+                page.mouse.click.assert_awaited_once_with(24, 16)
                 page.wait_for_timeout.assert_not_awaited()
             finally:
                 painted.set()

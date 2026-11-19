@@ -5,21 +5,19 @@ dynamic mode, not synthetic readings. Captured on 2026-10-19.
 
 ## Official UI test dataset
 
-`session-with-heap-maps.json` is the official full-data fixture for native and
-browser UI testing. It is already decoded, includes all object groups and
-captured heap chunk maps, and needs no Python backend to open.
-From the zview-gui repository root, both recipes default to this file:
+`session-with-heap-maps.json` is the official decoded fixture for headless Rust
+tests. It includes all object groups and captured heap chunk maps.
+For interactive inspection, both native and web replay the original ZView
+recording through the Python adapter:
 
 ```sh
-just ui
-just web-ui
+just web-gui --python .venv-web/bin/python
 ```
 
-Without `just`, pass the file explicitly:
-
-```sh
-cargo run -- test-data/zview-bench-60s/session-with-heap-maps.json
-```
+For native use `just gui` with the same adapter environment. In either host,
+use Configure session → Replay with recording
+`test-data/zview-bench-60s/capture.ndjson.gz` and matching ELF
+`test-data/zview-bench-60s/zephyr.elf`.
 
 Open **Kernel objects → Heap → bench_heap** for the fragmentation map, heap
 statistics, waiting threads, and time history.
@@ -29,8 +27,7 @@ Open **Kernel objects → Work queue → bench_workq**. Pending work includes
 varies from 0 to 2. `bench_workq` reports Started/Busy throughout, including
 131 snapshots with no pending items. The system work queue reports Started
 without Busy (Idle) throughout. These are sampled handler states, not CPU
-utilization. Drain waiters are empty in this capture;
-use the synthetic work queue fixture to exercise nonempty drain queues.
+utilization. Drain waiters are empty in this capture.
 
 ## Contents
 
@@ -56,7 +53,7 @@ the legacy export exactly.
 
 ## Heap screen validation
 
-Open the official fixture using either command above, then choose
+Open the original capture through Replay, then choose
 **Kernel objects → Heap → bench_heap**. The full-benchmark heap rendering and
 playback test runs with `cargo test`; it needs no local export or Python setup.
 
@@ -64,9 +61,6 @@ This acquisition contains 421 distinct maps across 577 snapshots, with 2–130
 chunks and up to about 97.7% map fragmentation. The midpoint shows 119 chunks
 with 720 allocated bytes and 852 free bytes. Payload statistics and map totals
 use different accounting because chunk sizes include allocator overhead.
-
-The existing synthetic fixtures remain useful for edge cases not exercised by
-this real acquisition.
 
 ## Provenance
 

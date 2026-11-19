@@ -11,9 +11,9 @@ from pathlib import Path
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
 # What the browser loads; target/web also holds Cargo's "web" profile output.
-SITE_FILES = ("index.html", "main.js", "documents.mjs")
+SITE_FILES = ("index.html", "main.js", "startup.mjs")
 SITE_DIRS = ("pkg", "fonts")
-REQUIRED = ("index.html", "main.js", "pkg/zview_desktop.js", "pkg/zview_desktop_bg.wasm",
+REQUIRED = ("index.html", "main.js", "startup.mjs", "pkg/zview_desktop.js", "pkg/zview_desktop_bg.wasm",
             "fonts/OFL.txt")
 
 

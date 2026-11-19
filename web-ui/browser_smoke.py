@@ -62,14 +62,15 @@ async def fill_canvas_input(page, y, text):
 
 
 async def click_header(page, primary=False):
-    """Click actual sidebar actions, opening the collapsed session popover first."""
+    """Click actual sidebar actions, expanding through the session button if needed."""
     # A viewport/sidebar change reaches GPUI's canvas layout on a later frame.
     await page.wait_for_timeout(150)
     current = await state(page)
-    if current["sidebar_collapsed"] and not current["session_popover_open"]:
+    if current["sidebar_collapsed"]:
         bounds = current["session_toggle_bounds"]
         await page.mouse.click(bounds["x"] + bounds["width"] / 2,
                                bounds["y"] + bounds["height"] / 2)
+        await wait_state(page, lambda s: not s["sidebar_collapsed"], "session button expands sidebar")
         await page.wait_for_timeout(200)
         current = await state(page)
     bounds = current["session_action_bounds"]
@@ -86,18 +87,76 @@ async def toggle_sidebar(page):
     # Wait for layout before sending a real click, then wait for its effect
     # rather than assuming the next GPUI frame arrives within 200 ms.
     current = await wait_state(
-        page, lambda s: s["session_panel_bounds"]["height"] > 0,
+        page, lambda s: s["sidebar_toggle_bounds"]["width"] > 0,
         "sidebar layout before toggle",
     )
     collapsed = current["sidebar_collapsed"]
-    sidebar = 54 if current["sidebar_collapsed"] else current["sidebar_width"]
-    await page.mouse.move(sidebar + 27, 28)
+    bounds = current["sidebar_toggle_bounds"]
+    x = bounds["x"] + bounds["width"] / 2
+    y = bounds["y"] + bounds["height"] / 2
+    await page.mouse.move(x, y)
     await page.evaluate("new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))")
-    await page.mouse.click(sidebar + 27, 28)
+    await page.mouse.click(x, y)
     await wait_state(
         page, lambda s: s["sidebar_collapsed"] != collapsed,
         "sidebar toggle",
     )
+
+async def check_shared_chrome(page):
+    """Both sidebar states expose header dialogs and the fixed company link."""
+    await wait_state(page, lambda s: s["about_bounds"]["width"] > 0
+                     and s["backing_bounds"]["height"] > 0, "shared chrome layout")
+    initial = await state(page)
+    toggle = initial["sidebar_toggle_bounds"]
+
+    async def company_site(route):
+        # Exercise the real link without depending on an external website.
+        await route.fulfill(status=200, content_type="text/html", body="<title>Zano</title>")
+
+    await page.context.route("https://zano.systems/**", company_site)
+    try:
+        for collapsed in (False, True):
+            if (await state(page))["sidebar_collapsed"] != collapsed:
+                await toggle_sidebar(page)
+            current = await state(page)
+            assert current["sidebar_toggle_bounds"] == toggle, current
+            for name in ("about_bounds", "help_bounds"):
+                bounds = current[name]
+                assert bounds["height"] > 0 and bounds["y"] + bounds["height"] <= 32, bounds
+                await page.mouse.click(bounds["x"] + bounds["width"] / 2,
+                                       bounds["y"] + bounds["height"] / 2)
+                await wait_state(page, lambda s: s["modal_open"], "header dialog")
+                await page.evaluate("new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))")
+                await page.keyboard.press("Escape")
+                await wait_state(page, lambda s: not s["modal_open"], "dismissed header dialog")
+            current = await state(page)
+            backing = current["backing_bounds"]
+            assert backing["x"] >= 0
+            assert backing["x"] + backing["width"] <= current["navigation_width"], current
+            session = current["session_toggle_bounds"] if collapsed else current["session_panel_bounds"]
+            assert backing["y"] + backing["height"] <= session["y"], current
+            async with page.expect_popup() as popup:
+                await page.mouse.click(backing["x"] + backing["width"] / 2,
+                                       backing["y"] + backing["height"] / 2)
+            company = await popup.value
+            await company.wait_for_url("https://zano.systems/")
+            await company.close()
+            for _ in range(64):
+                await page.keyboard.press("Tab")
+                if (await state(page))["backing_focused"]:
+                    break
+            assert (await state(page))["backing_focused"], "Company link must be keyboard reachable"
+            async with page.expect_popup() as popup:
+                await page.keyboard.press("Enter")
+            company = await popup.value
+            await company.wait_for_url("https://zano.systems/")
+            await company.close()
+        await toggle_sidebar(page)
+        after = await state(page)
+        assert not after["sidebar_collapsed"]
+        assert after["session_id"] == initial["session_id"], after
+    finally:
+        await page.context.unroute("https://zano.systems/**", company_site)
 
 
 async def select_live_mode(page):
@@ -132,12 +191,16 @@ async def check_sidebar_session(page):
     collapsed = await state(page)
     assert collapsed["sidebar_collapsed"], collapsed
     bounds = collapsed["session_toggle_bounds"]
+    # The trigger shares the navigation icons' center in Kit's 48 px rail.
+    assert abs(bounds["x"] + bounds["width"] / 2 - 24) <= 1, bounds
     await page.mouse.click(bounds["x"] + bounds["width"] / 2,
                            bounds["y"] + bounds["height"] / 2)
-    await wait_state(page, lambda s: s["session_popover_open"], "collapsed session popover")
-    await page.keyboard.press("Escape")
-    await wait_state(page, lambda s: not s["session_popover_open"], "dismissed session popover")
-    # Leave the trigger, then reach it again through keyboard navigation.
+    expanded = await wait_state(page, lambda s: not s["sidebar_collapsed"],
+                                "session button expands sidebar")
+    assert expanded["session_panel_focused"], expanded
+    assert expanded["session_id"] == before["session_id"], expanded
+    await toggle_sidebar(page)
+    # Leave the session button, then reach it again through keyboard navigation.
     await page.keyboard.press("Tab")
     for _ in range(64):
         if (await state(page))["session_toggle_focused"]:
@@ -146,11 +209,9 @@ async def check_sidebar_session(page):
         await page.wait_for_timeout(30)
     assert (await state(page))["session_toggle_focused"], "Session trigger must be keyboard reachable"
     await page.keyboard.press("Enter")
-    await wait_state(page, lambda s: s["session_popover_open"], "keyboard session popover")
-    await page.keyboard.press("Escape")
-    await wait_state(page, lambda s: not s["session_popover_open"], "keyboard popover dismissal")
-    assert (await state(page))["session_toggle_focused"], "Keyboard dismissal restores trigger focus"
-    await toggle_sidebar(page)
+    expanded = await wait_state(page, lambda s: not s["sidebar_collapsed"],
+                                "keyboard session button expands sidebar")
+    assert expanded["session_panel_focused"], "Keyboard expansion focuses the session panel"
     await page.set_viewport_size({"width": 1400, "height": 1000})
     after = await state(page)
     assert after["session_id"] == before["session_id"], after
@@ -273,10 +334,10 @@ async def check_configuration(page, screenshot=None):
         await toggle_sidebar(page)
         assert (await state(page))["sidebar_collapsed"]
         await click_header(page)
-        await wait_state(page, lambda s: s["dialog_open"], "header with collapsed sidebar")
+        await wait_state(page, lambda s: s["dialog_open"], "configuration after session expansion")
+        assert not (await state(page))["sidebar_collapsed"]
         await page.keyboard.press("Escape")
-        await wait_state(page, lambda s: not s["dialog_open"], "collapsed dialog dismissal")
-        await toggle_sidebar(page)
+        await wait_state(page, lambda s: not s["dialog_open"], "expanded dialog dismissal")
         assert not (await state(page))["sidebar_collapsed"]
         await page.set_viewport_size({"width": 1000, "height": 680})
         await click_header(page)
@@ -711,14 +772,16 @@ async def check_live(page, live, screenshot, sockets, dialogs):
             await page.screenshot(path=str(Path(screenshot).with_name("cpu-averaging-thread-min.png")),
                                   full_page=True)
         await page.set_viewport_size({"width": 1400, "height": 1000})
-        await page.mouse.click(100, 180)
+        await page.wait_for_timeout(200)
+        # Navigation is below the shared 32 px header.
+        await page.mouse.click(100, 212)
         await wait_state(page, lambda s: s["screen"] == "KernelObjects" and not s["view_loading"],
                          "kernel objects with header controls")
         await click_header(page)
         await wait_state(page, lambda s: s["dialog_open"], "header configuration from kernel objects")
         await page.keyboard.press("Escape")
         await wait_state(page, lambda s: not s["dialog_open"], "kernel configuration dismissal")
-        await page.mouse.click(100, 147)
+        await page.mouse.click(100, 179)
         returned = await wait_state(page, lambda s: s["screen"] == "Overview" and not s["view_loading"], "return to Overview")
         assert returned["history_origin"] > full["history_origin"], returned
         assert returned["history_seconds"] < 1, returned
@@ -815,7 +878,7 @@ async def check_live(page, live, screenshot, sockets, dialogs):
                          and s["displayed_session"] == s["session_id"]
                          and s["frames_received"] >= 2, "heap test live session")
         await page.wait_for_timeout(200)
-        await page.mouse.click(100, 180)
+        await page.mouse.click(100, 212)
         await wait_state(page, lambda s: s["screen"] == "KernelObjects" and not s["view_loading"], "heap list")
         await page.wait_for_timeout(250)
         await page.mouse.click(480, 358)
@@ -969,15 +1032,30 @@ async def check(executable_path=None, screenshot=None, sidebar_only=False):
                 page.set_default_navigation_timeout(90000)
                 errors = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
+                async def unavailable_adapter(route):
+                    await route.fulfill(status=404, body="Adapter not running")
+
+                await page.route("**/api/session", unavailable_adapter)
                 await page.goto(f"http://127.0.0.1:{port}")
                 await page.wait_for_selector('html[data-zview-ready="true"]', timeout=90000)
+                missing = await wait_state(
+                    page, lambda s: "HTTP 404" in (s["error"] or ""),
+                    "required adapter error without sample fallback",
+                )
+                assert missing["available"] and not missing["connected"], missing
+                assert missing["visible_threads"] == 0 and missing["source"] is None, missing
+                assert missing["cpu"] is None, missing
+                assert await page.locator('input[type="file"]').count() == 0
+                assert await page.locator("#status").is_hidden()
+                await page.unroute("**/api/session", unavailable_adapter)
                 await wait_state(page, lambda s: s["connected"], "adapter connection")
+                await check_shared_chrome(page)
                 if sidebar_only:
                     await check_sidebar_live(page, live, f"http://127.0.0.1:{port}")
                     assert not errors, errors
                     if screenshot:
                         await page.screenshot(path=screenshot, full_page=True)
-                    print("Sidebar smoke passed: three viewports, mouse/keyboard popover, "
+                    print("Sidebar smoke passed: three viewports, mouse/keyboard session expansion, "
                           "history/demand preservation, Configure, Disconnect and Reconnect. "
                           "Live acquisition uses a controlled worker, not hardware.")
                     return

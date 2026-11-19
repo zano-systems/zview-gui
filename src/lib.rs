@@ -1,6 +1,7 @@
 pub mod adapter_protocol;
 mod app_assets;
 mod chart_zoom;
+mod header;
 mod heap_detail;
 mod heap_map;
 mod help;
@@ -14,9 +15,8 @@ mod mutex_detail;
 #[cfg(not(target_family = "wasm"))]
 mod native_adapter;
 #[cfg(not(target_family = "wasm"))]
-mod recording;
+mod native_titlebar;
 mod semaphore_detail;
-mod session;
 mod session_settings;
 mod slab_detail;
 mod step_area_chart;
@@ -43,9 +43,7 @@ use gpui_kit::component::{
     progress::Progress,
     scroll::ScrollableElement,
     select::{SearchableVec, Select, SelectEvent, SelectState},
-    sidebar::{
-        Sidebar, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem, SidebarToggleButton,
-    },
+    sidebar::{Sidebar, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem},
     tooltip::Tooltip,
 };
 use gpui_kit::prelude::FluentBuilder;
@@ -211,7 +209,6 @@ struct ThreadsApp {
     playback_position: Option<f64>,
     source: Option<PathBuf>,
     recording_elf: Option<PathBuf>,
-    loading: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     error: Option<String>,
     collapsed: bool,
     selected: Option<u64>,
@@ -220,6 +217,7 @@ struct ThreadsApp {
     missing_notice: Option<Screen>,
     table_focus: FocusHandle,
     detail_focus: FocusHandle,
+    backing_focus: FocusHandle,
     thread_rows_scroll: ScrollHandle,
     thread_columns_scroll: ScrollHandle,
     object_rows_scroll: ScrollHandle,
@@ -234,46 +232,35 @@ struct ThreadsApp {
     adapter: web_adapter::Controls,
 }
 
-impl Drop for ThreadsApp {
-    fn drop(&mut self) {
-        if let Some(cancel) = &self.loading {
-            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
-    }
-}
-
 impl ThreadsApp {
     #[cfg(not(target_family = "wasm"))]
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        match native_adapter::Options::parse(std::env::args_os().skip(1)) {
-            Ok(options) if options.offline => Self::from_source(options.source, window, cx),
-            Ok(options) => {
-                let frames = model::parse(r#"{"threads":[]}"#).expect("valid empty frame");
-                let mut app = Self::from_frames(frames, None, None, window, cx);
-                app.start_native_adapter(options, cx);
-                app
-            }
-            Err(error) => {
-                let frames = model::parse(r#"{"threads":[]}"#).expect("valid empty frame");
-                Self::from_frames(frames, None, Some(error), window, cx)
-            }
-        }
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    fn from_source(source: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let loaded = source.as_deref().map(model::load);
-        let error = loaded.as_ref().and_then(|r| r.as_ref().err().cloned());
-        let frames = loaded.and_then(Result::ok).unwrap_or_else(|| {
-            model::parse(include_str!("../sample.json")).expect("valid bundled dump")
-        });
-        Self::from_frames(
-            frames,
-            if error.is_none() { source } else { None },
-            error,
+        Self::from_native_options(
+            native_adapter::Options::parse(std::env::args_os().skip(1)),
             window,
             cx,
         )
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn from_native_options(
+        options: Result<native_adapter::Options, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut app = Self::adapter_session(window, cx);
+        match options {
+            Ok(options) => app.start_native_adapter(options, cx),
+            Err(error) => app.error = Some(error),
+        }
+        app
+    }
+
+    /// Both hosts start empty and remain adapter-backed even when disconnected.
+    fn adapter_session(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut app = Self::from_frames(vec![Frame::default()], None, None, window, cx);
+        app.adapter.available = true;
+        app
     }
 
     fn from_frames(
@@ -308,7 +295,6 @@ impl ThreadsApp {
             frames,
             source,
             recording_elf: None,
-            loading: None,
             error,
             collapsed: false,
             selected: None,
@@ -317,6 +303,7 @@ impl ThreadsApp {
             missing_notice: None,
             table_focus: cx.focus_handle(),
             detail_focus: cx.focus_handle(),
+            backing_focus: cx.focus_handle().tab_stop(true),
             thread_rows_scroll: ScrollHandle::new(),
             thread_columns_scroll: ScrollHandle::new(),
             object_rows_scroll: ScrollHandle::new(),
@@ -410,15 +397,6 @@ impl ThreadsApp {
         });
     }
 
-    #[cfg(test)]
-    fn load(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        match model::load(&path) {
-            Ok(frames) => self.install(frames, path, None, window, cx),
-            Err(error) => self.error = Some(error),
-        }
-        cx.notify();
-    }
-
     fn install(
         &mut self,
         frames: Vec<Frame>,
@@ -443,100 +421,6 @@ impl ThreadsApp {
         self.thread_rows_scroll.set_offset(point(px(0.), px(0.)));
         self.object_rows_scroll.set_offset(point(px(0.), px(0.)));
         self.sync_heaps(window, cx);
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    fn start_load(&mut self, path: PathBuf, elf: Option<PathBuf>, cx: &mut Context<Self>) {
-        if self.loading.is_some() {
-            return;
-        }
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        self.loading = Some(cancel.clone());
-        self.error = None;
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn({
-                    let path = path.clone();
-                    let elf = elf.clone();
-                    let cancel = cancel.clone();
-                    async move {
-                        match elf {
-                            Some(elf) => recording::load(&path, &elf, cancel),
-                            None => model::load(&path),
-                        }
-                    }
-                })
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                // Cancellation wins even if the decoder has just finished.
-                let cancelled = cancel.load(std::sync::atomic::Ordering::Relaxed);
-                this.loading = None;
-                if !cancelled {
-                    match result {
-                        Ok(frames) => this.install(frames, path, elf, window, cx),
-                        Err(error) => this.error = Some(error),
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    fn open_recording(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.loading.is_some() {
-            return;
-        }
-        let paths = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: Some("Open ZView recording (.ndjson.gz)".into()),
-        });
-        cx.spawn(async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = paths.await
-                && let Some(path) = paths.into_iter().next()
-            {
-                let elf_paths = cx.update(|cx| {
-                    cx.prompt_for_paths(PathPromptOptions {
-                        files: true,
-                        directories: false,
-                        multiple: false,
-                        prompt: Some("Select the matching Zephyr ELF".into()),
-                    })
-                });
-                if let Ok(Ok(Some(paths))) = elf_paths.await
-                    && let Some(elf) = paths.into_iter().next()
-                {
-                    let _ = this.update(cx, |this, cx| this.start_load(path, Some(elf), cx));
-                }
-            }
-        })
-        .detach();
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    fn open(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.loading.is_some() {
-            return;
-        }
-        let paths = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: Some("Open ZView dump JSON".into()),
-        });
-        cx.spawn(async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = paths.await
-                && let Some(path) = paths.into_iter().next()
-            {
-                let _ = this.update(cx, |this, cx| this.start_load(path, None, cx));
-            }
-        })
-        .detach();
     }
 
     fn sync_missing_notice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -770,9 +654,14 @@ impl ThreadsApp {
         };
         let section_link = is_detail || kind.is_some();
         div()
+            .id("breadcrumbs")
             .debug_selector(|| "breadcrumbs".into())
             .flex()
-            .flex_wrap()
+            .overflow_hidden()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                cx.stop_propagation();
+            })
+            .on_click(|_, _, cx| cx.stop_propagation())
             .min_w_0()
             .items_center()
             .gap_2()
@@ -855,13 +744,20 @@ impl ThreadsApp {
             .when_some(self.screen.name(), |el, name| {
                 el.child("›").child(
                     div()
+                        .id("breadcrumb-current-label")
                         .debug_selector(|| "breadcrumb-current".into())
+                        .map(|el| {
+                            let name = name.to_string();
+                            el.min_w_0().overflow_hidden().tooltip(move |window, cx| {
+                                Tooltip::new(name.clone()).build(window, cx)
+                            })
+                        })
                         .h_6()
                         .px_1()
                         .flex()
                         .items_center()
                         .text_color(rgb(MUTED))
-                        .child(name.to_string()),
+                        .child(div().truncate().child(name.to_string())),
                 )
             })
     }
@@ -889,6 +785,15 @@ impl ThreadsApp {
 
     fn sidebar_width(&self) -> Pixels {
         px(if self.uses_web_adapter() { 300. } else { 230. })
+    }
+
+    fn navigation_width(&self) -> Pixels {
+        // Match Kit's icon rail, independent of native window-control spacing.
+        if self.collapsed {
+            px(48.)
+        } else {
+            self.sidebar_width()
+        }
     }
 
     fn sidebar(&self, _window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -934,7 +839,9 @@ impl ThreadsApp {
             })
             .collect::<Vec<_>>();
         Sidebar::new("navigation")
-            .w(width)
+            // Header and navigation change width together on both hosts.
+            .w_full()
+            .min_w(self.navigation_width())
             .collapsed(self.collapsed)
             .collapsible(true)
             .header(
@@ -993,7 +900,7 @@ impl ThreadsApp {
                             SidebarMenuItem::new("Kernel objects")
                                 .icon(Icon::new(assets::IconName::Boxes))
                                 .active(in_objects)
-                                .default_open(in_objects)
+                                .default_open(true)
                                 .click_to_open(true)
                                 .children(types)
                                 .suffix({
@@ -1011,25 +918,13 @@ impl ThreadsApp {
                         ),
                 ),
             )
-            .child(
-                SidebarGroup::new("Session").child(
-                    SidebarMenu::new()
-                        .child(
-                            SidebarMenuItem::new("Help & shortcuts")
-                                .icon(Icon::new(assets::IconName::Keyboard))
-                                .on_click(
-                                    cx.listener(|_, _, window, cx| help::open_help(window, cx)),
-                                ),
-                        )
-                        .child(SidebarMenuItem::new("About").icon(IconName::Info).on_click(
-                            cx.listener(|_, _, window, cx| help::open_about(window, cx)),
-                        )),
-                ),
-            )
             .footer(
                 div()
                     .w_full()
                     .p_2()
+                    // Kit supplies the rail's outer inset. Do not add another
+                    // inset around this icon, or it shifts off the menu center.
+                    .when(self.collapsed, |el| el.p_0().flex().justify_center())
                     .when(self.uses_web_adapter() && !self.collapsed, |el| {
                         // Sidebar's footer slot adds 12 px at each side and below.
                         // Extend the session section through that navigation inset.
@@ -1042,30 +937,13 @@ impl ThreadsApp {
                             .border_color(rgb(BORDER))
                             .bg(rgb(BG))
                     })
-                    .children(self.adapter_session_controls(_window, cx))
-                    .when(!self.collapsed && !self.uses_web_adapter(), |el| {
-                        let mode = "offline";
-                        el.child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap_2()
-                                .text_xs()
-                                .text_color(rgb(MUTED))
-                                .child(if self.recording_elf.is_some() {
-                                    "RECORDING SESSION"
-                                } else if self.source.is_some() {
-                                    "DUMP SESSION"
-                                } else {
-                                    "BUNDLED SAMPLE"
-                                })
-                                .child(format!(
-                                    "Frame {} of {} · {mode}",
-                                    self.frame + 1,
-                                    self.frames.len()
-                                )),
-                        )
-                    }),
+                    .when(self.collapsed, |el| el.flex_col().items_center().gap_2())
+                    .child(help::sidebar_backing(
+                        self.collapsed,
+                        &self.backing_focus,
+                        self.adapter.backing_bounds.clone(),
+                    ))
+                    .children(self.adapter_session_controls(_window, cx)),
             )
     }
 
@@ -1478,7 +1356,7 @@ impl Render for ThreadsApp {
             .and_then(|f| f.elapsed_seconds)
             .map(|end| format!("Playing · {end:.2}s / {end:.2}s · 1×"))
             .unwrap_or_else(|| format!("{} / {}", self.frames.len(), self.frames.len()));
-        div()
+        let root = div()
             .size_full()
             .flex()
             .bg(rgb(BG))
@@ -1490,16 +1368,25 @@ impl Render for ThreadsApp {
                         this.show_overview(window, cx)
                     }))
             })
-            .when(matches!(self.screen, Screen::Semaphore(_) | Screen::MessageQueue(_) | Screen::MemorySlab(_) | Screen::Mutex(_) | Screen::WorkQueue(_) | Screen::Heap(_)), |el| {
-                el.track_focus(&self.detail_focus)
-                    .key_context("SemaphoreDetail")
-                    .on_action(cx.listener(|this, _: &BackToObjects, window, cx| {
-                        this.show_kernel_objects(this.object_kind, window, cx)
-                    }))
-            })
-            .child(self.sidebar(window, cx))
-            .child(
-                div()
+            .when(
+                matches!(
+                    self.screen,
+                    Screen::Semaphore(_)
+                        | Screen::MessageQueue(_)
+                        | Screen::MemorySlab(_)
+                        | Screen::Mutex(_)
+                        | Screen::WorkQueue(_)
+                        | Screen::Heap(_)
+                ),
+                |el| {
+                    el.track_focus(&self.detail_focus)
+                        .key_context("SemaphoreDetail")
+                        .on_action(cx.listener(|this, _: &BackToObjects, window, cx| {
+                            this.show_kernel_objects(this.object_kind, window, cx)
+                        }))
+                },
+            );
+        let content = div()
                     .id(match self.screen {
                         Screen::Overview => "overview-content",
                         Screen::Thread(_) => "detail-content",
@@ -1521,36 +1408,6 @@ impl Render for ThreadsApp {
                     .pt_2()
                     .gap_2()
                     .overflow_hidden()
-                    .child(
-                        div()
-                            .debug_selector(|| "app-toolbar".into())
-                            .flex()
-                            .flex_shrink_0()
-                            .flex_wrap()
-                            .gap_3()
-                            .items_center()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .when(self.uses_web_adapter(), |el| el.min_w(px(180.)))
-                                    .gap_4()
-                                    .items_center()
-                                    .child(
-                                        SidebarToggleButton::new()
-                                            .collapsed(self.collapsed)
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.collapsed = !this.collapsed;
-                                                this.adapter.session_popover_open = false;
-                                                cx.notify();
-                                            })),
-                                    )
-                                    .child(self.breadcrumbs(cx)),
-                            )
-                            .when(!self.uses_web_adapter(), |el| el.child(self.session_menu(cx))),
-                    )
                     .when(self.screen == Screen::Overview && !live_loading, |el| {
                         el.child(
                             div()
@@ -1570,26 +1427,12 @@ impl Render for ThreadsApp {
                     })
                     .when_some(self.error.clone(), |el, error| {
                         el.child(div().p_3().flex_shrink_0().rounded_md().bg(rgb(0x492c3c))
-                            .child(layout::note("session-error", error)))
+                            .child(layout::wrapped_note("session-error", error, false)))
                     })
                     .children(self.adapter_display_notice())
                     .when(live_loading && self.screen != Screen::KernelObjects, |el| {
                         el.child(div().flex_1().min_h_0().p_4()
                             .child(layout::note("live-view-loading", self.live_view_loading_note())))
-                    })
-                    .when(self.loading.is_some(), |el| {
-                        el.child(
-                            div().debug_selector(|| "session-loading".into())
-                                .flex().flex_shrink_0().items_center().gap_3().p_3().rounded_md().bg(rgb(CARD))
-                                .child("Loading session… Current session stays available.")
-                                .child(div().debug_selector(|| "cancel-load".into()).child(Button::new("cancel-load").label("Cancel")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        if let Some(cancel) = &this.loading {
-                                            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                                        }
-                                        cx.notify();
-                                    })))),
-                        )
                     })
                     .when_some(
                         match &self.screen {
@@ -1731,28 +1574,8 @@ impl Render for ThreadsApp {
                             .text_xs()
                             .text_color(rgb(MUTED))
                             // Keep the spacer so history/playback stays right-aligned.
-                            // Adapter sessions already identify their source in the header.
-                            .child(div().flex_1().min_w_0().when(!self.uses_web_adapter(), |el| el.child(layout::note("session-source",
-                                self.source
-                                    .as_ref()
-                                    .map(|p| match &self.recording_elf {
-                                        Some(elf) => format!("{} · ELF: {}", p.display(), elf.display()),
-                                        None => p.display().to_string(),
-                                    })
-                                    .unwrap_or_else(|| {
-                                        "Bundled real dump · sys_heap_v4.3 recording, frame 2"
-                                            .into()
-                                    }),
-                            ))))
-                            .when(frame.is_live && !self.uses_web_adapter(), |el| {
-                                let description = self.live_history.label();
-                                el.child(
-                                    div().id("live-history-status").debug_selector(|| "live-history-status".into())
-                                        .flex_shrink_0().whitespace_nowrap().text_xs()
-                                        .tooltip(move |window, cx| Tooltip::new(description.clone()).build(window, cx))
-                                        .child(self.live_history.footer_label())
-                                )
-                            })
+                            // Session source and history belong to the sidebar.
+                            .child(div().flex_1().min_w_0())
                             .when(!frame.is_live, |el| el.child(
                                 div()
                                     .flex()
@@ -1818,8 +1641,33 @@ impl Render for ThreadsApp {
                                             }))),
                                     ),
                             )),
-                    ),
-            )
+                    );
+        let header = {
+            #[cfg(not(target_family = "wasm"))]
+            {
+                self.native_titlebar(cx).into_any_element()
+            }
+            #[cfg(target_family = "wasm")]
+            {
+                self.web_header(cx).into_any_element()
+            }
+        };
+        root.flex_col().child(header).child(
+            div()
+                .flex()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .child(
+                    div()
+                        .debug_selector(|| "sidebar-pane".into())
+                        .w(self.navigation_width())
+                        .h_full()
+                        .flex_shrink_0()
+                        .child(self.sidebar(window, cx)),
+                )
+                .child(content),
+        )
     }
 }
 
@@ -1878,14 +1726,30 @@ pub fn run() {
                     cx,
                 ))),
                 window_min_size: Some(size(px(1000.), px(680.))),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("ZView".into()),
-                    ..Default::default()
-                }),
-                ..Default::default()
+                ..native_titlebar::window_options()
             },
             cx,
-            |window, cx| cx.new(|cx| ThreadsApp::new(window, cx)),
+            |window, cx| {
+                cx.new(|cx| {
+                    let app = ThreadsApp::new(window, cx);
+                    let weak = cx.weak_entity();
+                    window.on_window_should_close(cx, move |_, cx| {
+                        let _ = weak.update(cx, |app, cx| app.close_native(cx));
+                        false
+                    });
+                    // System Quit bypasses the window close request. Cleanup must
+                    // finish before process exit, not on a detached reaper thread.
+                    cx.on_app_quit(|app, _| {
+                        app.adapter.connection_task.take();
+                        app.adapter.startup.take();
+                        app.adapter.process.take();
+                        app.adapter.shutdown.take();
+                        async {}
+                    })
+                    .detach();
+                    app
+                })
+            },
         )
         .expect("open ZView window");
         cx.activate(true);

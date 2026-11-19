@@ -69,8 +69,9 @@ This exercises owned-process readiness, the native HTTP/WebSocket transport,
 real recording replay and reconnect snapshot recovery. The normal Python suite
 also checks parent-EOF shutdown; Rust UI tests cover shared native session
 controls. These do not replace native/browser visual checks or Live hardware
-validation. Do not point `ZVIEW_PYTHON` at this adapter environment: the legacy
-recording exporter has a different backend contract.
+validation. Native and web share the same UI foundation and Python adapter.
+Both hosts require that adapter. Fixture regeneration uses CI's separate
+pinned exporter environment; its backend contract differs from the adapter's.
 
 ## Commits
 
