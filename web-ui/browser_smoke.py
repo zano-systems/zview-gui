@@ -82,10 +82,22 @@ async def click_header(page, primary=False):
 
 
 async def toggle_sidebar(page):
-    current = await state(page)
+    # A restored session can be observable before its sidebar has been painted.
+    # Wait for layout before sending a real click, then wait for its effect
+    # rather than assuming the next GPUI frame arrives within 200 ms.
+    current = await wait_state(
+        page, lambda s: s["session_panel_bounds"]["height"] > 0,
+        "sidebar layout before toggle",
+    )
+    collapsed = current["sidebar_collapsed"]
     sidebar = 54 if current["sidebar_collapsed"] else current["sidebar_width"]
+    await page.mouse.move(sidebar + 27, 28)
+    await page.evaluate("new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))")
     await page.mouse.click(sidebar + 27, 28)
-    await page.wait_for_timeout(200)
+    await wait_state(
+        page, lambda s: s["sidebar_collapsed"] != collapsed,
+        "sidebar toggle",
+    )
 
 
 async def select_live_mode(page):
@@ -616,14 +628,16 @@ async def check_live(page, live, screenshot, sockets, dialogs):
         assert live.calls == 1
         assert full["indicator"] == "healthy", full
         assert full["status_shimmer"], full
-        await check_sidebar_session(page)
         # The host forwards live media changes without restarting acquisition.
+        # Check freshness-dependent animation before the slower sidebar checks:
+        # the controlled worker pauses after frame 300, so its status expires.
         await page.emulate_media(reduced_motion="reduce")
         reduced = await wait_state(page, lambda s: s["reduced_motion"], "browser reduced motion")
         assert not reduced["status_shimmer"], reduced
         assert reduced["indicator"] == "healthy", reduced
         await page.emulate_media(reduced_motion="no-preference")
         await wait_state(page, lambda s: s["status_shimmer"], "Live shimmer restored")
+        await check_sidebar_session(page)
         assert "window_slider_bounds" not in full, "The redundant footer slider was removed."
         # The actual GPUI wheel/fit controls only change the viewport. Repeated
         # source readings and zooming must not allocate or discard chart history.
@@ -950,6 +964,9 @@ async def check(executable_path=None, screenshot=None, sidebar_only=False):
             )
             try:
                 page = await browser.new_page(viewport={"width": 1400, "height": 1000})
+                # Reloads reinitialize WASM too; allow the same startup budget
+                # as the UI-ready checks instead of the 30-second default.
+                page.set_default_navigation_timeout(90000)
                 errors = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 await page.goto(f"http://127.0.0.1:{port}")
@@ -1015,8 +1032,6 @@ async def check(executable_path=None, screenshot=None, sidebar_only=False):
                     await check_configuration(page, screenshot)
                     await check_file_pickers(page, dialogs)
                     await check_live(page, live, screenshot, runner.app[SOCKETS], dialogs)
-                    for release_before_reply in (False, True):
-                        await check_view_takeover(browser, release_before_reply=release_before_reply)
                 except Exception:
                     if screenshot:
                         await page.screenshot(path=screenshot, full_page=True)
@@ -1035,6 +1050,11 @@ async def check(executable_path=None, screenshot=None, sidebar_only=False):
                         clip={"x": 0, "y": 0, "width": 320, "height": page.viewport_size["height"]},
                     )
                 assert not errors, errors
+                # The ownership cases use independent servers and pages. Release
+                # the long-running UI's graphics resources before starting them.
+                await page.close()
+                for release_before_reply in (False, True):
+                    await check_view_takeover(browser, release_before_reply=release_before_reply)
                 print("GPUI Rust/WASM smoke passed: typed frames into the shared UI, "
                       "two tabs, reconnect, failure/retry, stop/restart, header controls, "
                       "keyboard apply/cancel, build context, stale-preview cancellation, "
@@ -1046,7 +1066,7 @@ async def check(executable_path=None, screenshot=None, sidebar_only=False):
                       "and different-screen ownership recovery before/after the busy reply. "
                       "Live acquisition uses a controlled worker, not hardware.")
             finally:
-                if screenshot and sys.exc_info()[0] is not None:
+                if screenshot and not page.is_closed() and sys.exc_info()[0] is not None:
                     await page.screenshot(
                         path=str(Path(screenshot).with_name("failure.png")), full_page=True
                     )
