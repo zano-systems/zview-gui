@@ -27,7 +27,9 @@ class LaunchError(Exception):
 
 def add_serve_options(parser):
     """The options ``zview-gui`` and ``west zview-gui`` share (same dests)."""
-    parser.add_argument("-d", "--build-dir", help="Zephyr build directory to connect Live to.")
+    parser.add_argument("-d", "--build-dir",
+                        help="Zephyr build directory to connect Live to. Relative to --data-root "
+                             "when supplied, otherwise the current directory.")
     parser.add_argument("--domain", help="Firmware image of a sysbuild build.")
     parser.add_argument("-e", "--elf-file", help="ELF override.")
     parser.add_argument("-r", "--runner", help="Probe runner override (gdb, jlink, nrfutil, pyocd).")
@@ -122,7 +124,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
     build_dir = None
     if args.build_dir is not None:
-        build_dir = Path(args.build_dir).resolve()
+        build_dir = Path(args.build_dir)
+        if args.data_root:
+            build_dir = Path(args.data_root) / build_dir
+        build_dir = build_dir.resolve()
         if not (build_dir / "CMakeCache.txt").is_file():
             parser.error(f"'{args.build_dir}' is not a build directory (no CMakeCache.txt).")
     try:

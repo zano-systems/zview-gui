@@ -5,8 +5,8 @@ activity, kernel objects, and memory usage, built in Rust with
 [GPUI Kit](https://gpui-kit.com/).
 
 ZView GUI is a companion frontend to [ZView](https://github.com/rodrigopex/zview),
-which provides data acquisition and decoding. Viewing exported JSON does not
-require ZView's Python backend; native recording import and the web session adapter do.
+which provides data acquisition and decoding. Native and browser sessions both
+require the Python adapter for Live acquisition and Replay.
 
 ## Status
 
@@ -18,7 +18,7 @@ MCP integration is not implemented.
 
 ## Current capabilities
 
-- Offline snapshot inspection and recorded-session playback.
+- Adapter-backed Live acquisition and recorded-session playback in native and web.
 - Threads overview and per-thread runtime and stack details.
 - Thread lists default to descending Load %. Select a column heading to sort;
   select it again to reverse direction. Name sorting keeps rows stable while
@@ -36,10 +36,9 @@ MCP integration is not implemented.
   state legends on hover or keyboard focus. Esc dismisses a focused explanation.
   Current warnings and missing-data notices remain visible.
 - Time-history charts, work queue activity, and captured heap fragmentation maps.
-- One shared Rust UI for native and WebAssembly builds. The browser accepts
-  already-decoded JSON without a Python backend. An experimental
+- One shared Rust UI for native and WebAssembly builds. The required
   [Python session adapter](web-ui/README.md) streams live target measurements or
-  decoded recordings into that browser UI through HTTP commands and WebSocket events.
+  decoded ZView recordings through HTTP commands and WebSocket events.
 - The adapter UI has persistent sidebar session controls, with editable
   Live/Replay settings, explicit Connect/Disconnect/Reconnect, and observed live
   samples/s (successful frames received by the adapter). Build directories
@@ -47,13 +46,13 @@ MCP integration is not implemented.
   not proof of the firmware's build revision.
 - Adapter sessions show status, icon-only actions, source and Live history cache
   in the sidebar's bottom panel, rather than occupying the main toolbar.
-  Collapsed sidebars expose the same controls through a session-status popover.
+  The collapsed session-status button expands the sidebar to show those controls.
   Navigation scrolls separately and long session panels scroll on short windows.
 - Adapter sessions show source information in the sidebar rather than repeating
   it in the footer. Live sessions also show a current-view history cache meter:
   estimated memory usage/budget and retained duration/time limit. The cache resets
-  on screen changes and is not total application memory. Standalone views retain
-  their footer source/history labels; playback controls remain in the footer.
+  on screen changes and is not total application memory. Playback controls
+  remain in the footer.
 - Session actions use icons with tooltips and accessible names. A green circle means fresh frames are
   arriving; busy, waiting/warning, failed and disconnected states have distinct
   indicators and text, not color alone.
@@ -73,43 +72,38 @@ MCP integration is not implemented.
 
 Install Rust, [just](https://just.systems/), and the
 [GPUI Kit native prerequisites](https://gpui-kit.com/docs/installation).
-From the repository root:
+Install the Python adapter as described in [Native Live and Replay](#native-live-and-replay).
+From the repository root, start the adapter-backed native application:
 
 ```sh
-just ui
+just gui
 ```
 
-For the browser, also install Python 3.10+ (standard library only) and set up
-the WASM build tools once:
+For the browser, use the same Python 3.12 adapter environment and set up
+the WASM build tools once. Then build and launch this checkout through the adapter:
 
 ```sh
 just web-setup
-just web-ui
+just web-gui --python .venv-web/bin/python
 ```
 
-Both launch commands default to the official
-[`session-with-heap-maps.json`](test-data/zview-bench-60s/session-with-heap-maps.json):
-577 snapshots over approximately 60 seconds, all object groups, and 421 distinct
-heap maps. Open **Kernel objects → Heap → bench_heap** to inspect fragmentation.
-See the [benchmark guide](test-data/zview-bench-60s/README.md) for provenance,
-regeneration, and checksums.
+Both applications start with an empty adapter session. Use Configure session
+to connect Live or replay a ZView recording with its matching ELF/build.
+The [benchmark guide](test-data/zview-bench-60s/README.md) provides a real
+recording and matching ELF for Replay, with provenance and checksums.
 
-Pass another decoded JSON file explicitly, or `""` for the bundled small sample:
-
-```sh
-just ui file.json
-just web-ui "path with spaces/file.json"
-just web-ui ""
-```
-
-`cargo run -- --offline` uses the small sample without Python. Bare `cargo run`
-starts an adapter-backed native session instead (see below). Native typography
-is unchanged; the browser bundles IBM Plex Sans and JetBrains Mono.
+`just gui` and bare `cargo run` require an adapter-backed native session.
+`just gui --python /path/to/python` selects the adapter interpreter explicitly.
+Native typography is unchanged; the browser bundles IBM Plex Sans and JetBrains Mono.
 
 ### Native Live and Replay
 
-The native application uses the same Python adapter, session configuration,
-Live/Replay controls and streaming protocol as the browser. Install the adapter
+The native executable is named `zview-gui-rs`. `just gui` and `cargo run`
+launch it; to select it explicitly, use `cargo run --bin zview-gui-rs`.
+The Python/browser command remains `zview-gui`.
+
+Native and web share the same Rust/GPUI UI foundation, Python adapter, session
+configuration, Live/Replay controls and streaming protocol. Install the adapter
 from this checkout into a separate Python 3.12 environment; no WASM build or
 browser assets are needed for native:
 
@@ -117,18 +111,39 @@ browser assets are needed for native:
 python3.12 -m venv .venv-web
 .venv-web/bin/python -m pip install -r web-ui/requirements.txt
 .venv-web/bin/python -m pip install --no-deps -e .
-cargo run -- --python .venv-web/bin/python
+just gui --python .venv-web/bin/python
 ```
 
 Use **Configure session** in the sidebar to choose Live or Replay. Replay needs
 the recording's matching ELF or build; Live needs matching firmware already
 running. Connecting does not flash firmware.
 
+To connect Live automatically at startup, pass `--build-dir` (or `-d`):
+
+```sh
+just gui --python .venv-web/bin/python \
+  --data-root "/path/to/project workspace" \
+  --build-dir "build"
+```
+
+Relative build paths are resolved under `--data-root`; absolute paths must be
+inside it. The default data root remains the working directory. The adapter
+resolves the build's ELF, runner and target using the same rules as Configure
+session. Auto-connect runs once after the first valid adapter snapshot; stream
+reconnects do not restart acquisition. Build/probe errors remain visible in the
+UI so settings can be corrected manually. No build, flash or reset is performed.
+This startup option is for the native-owned adapter and cannot be combined with
+`--adapter`; attached adapters remain controlled through the session UI.
+
 Native starts its own loopback adapter on a free port and shuts it down when
-the window closes. `--python` overrides `ZVIEW_GUI_PYTHON`; otherwise it uses
-`python3`. This environment is separate from the legacy native recording
-exporter's `ZVIEW_PYTHON` environment. Missing dependencies or startup failures
-are reported, not silently replaced with sample data.
+the window closes. Its terminal retains readiness and session diagnostics
+without browser URL or browser-server instructions.
+Closing the main window quits the application, waits for
+adapter startup if necessary, and requests graceful session cleanup. An owned
+adapter that does not exit within five seconds is terminated and reaped.
+System Quit also waits for owned-process cleanup.
+`--python` overrides `ZVIEW_GUI_PYTHON`; otherwise it uses
+`python3`. Missing dependencies or startup failures are reported in the UI.
 
 The adapter's data root defaults to the working directory. Pass
 `--data-root /path/to/workspace` when the recording, build or ELF is elsewhere.
@@ -143,9 +158,25 @@ Closing native never stops an adapter it attached to. Native and browser clients
 share the existing controlling-client rule: one client controls Live view
 selection at a time. Remote adapter connections are not supported.
 
-Passing a decoded JSON filename keeps standalone offline inspection available:
-`cargo run -- path/to/session.json`. `just ui` still opens the official JSON
-fixture; its behavior and the browser launch commands are unchanged.
+Native and web use the same adapter-backed Live and Replay workflows. Replay
+reads recordings generated by ZView with their matching ELF or build.
+
+Native and web share a 32-point application header, separate from navigation.
+Native integrates the OS window controls and dragging; web does not draw them.
+The sidebar toggle stays fixed at the left, with About and Help & shortcuts at
+the right of the leading section. The separator aligns with the sidebar edge
+when expanded. When collapsed, the leading section fits those controls, followed
+by the separator and breadcrumbs; the sidebar itself becomes a narrow icon rail.
+Header sizing lives in `src/header.rs`. Native window-control spacing does not
+widen the sidebar.
+
+Kernel objects navigation starts expanded on both hosts and can be collapsed
+manually. Fixed "Backed by Zano" attribution sits above the session controls in
+the shared sidebar footer and links to https://zano.systems/ (the logo is the
+link when collapsed).
+All session actions use the shared sidebar controls, with the collapsed session
+icon centered on the navigation icons. Activating it by mouse or keyboard expands
+the sidebar and focuses the session controls.
 
 ## West integration (`west zview-gui`)
 
@@ -261,13 +292,18 @@ On Windows, pass `.venv-web/Scripts/python.exe`.
 The west module still expects its release pin and may warn about the dev version;
 `west packages pip --install` restores the pinned release.
 
-### Browser behavior and static hosting
+### Browser startup and hosting
 
-The launcher prints a local URL, opens the browser, and serves only generated
-assets and the selected JSON on `127.0.0.1`. Keep the terminal running;
-**Ctrl+C** stops the server. **Offline ▾ → Open dump…** reads another file
-locally without uploading. Select a changed file again to reload it. Failed
-loads retain the current document. Inputs are limited to 16 MiB.
+`just web-gui` builds this checkout's assets and launches the installed adapter
+with `--site target/web`. Select its interpreter with `--python` or
+`ZVIEW_GUI_PYTHON`; otherwise it uses the launcher's Python. Adapter options
+such as `--data-root`, `--port` and `--no-open` are forwarded. Use `--skip-build`
+when the current browser build is already complete.
+
+The adapter prints a local URL and opens the browser. Keep the terminal running;
+**Ctrl+C** stops the adapter. Recordings and ELF/build paths are local to the
+adapter and constrained by its data root. A missing/disconnected adapter is
+reported in the UI and retried; the session controls remain accessible.
 
 Use a desktop-sized viewport of at least **1000 × 680**. GPUI prefers WebGPU
 and falls back to WebGL2; browser/driver support and background-tab playback
@@ -277,16 +313,15 @@ GPUI Kit 0.7.3's web dependencies require nightly Rust. `web-setup` installs
 the WASM target and matching wasm-bindgen CLI under `target/tools`; native
 builds remain on stable Rust. Set `ZVIEW_WEB_TOOLCHAIN` to override the web
 toolchain. The first build downloads pinned, checksum-verified fonts and Rust
-dependencies; Node/npm and a ZView Python installation are not needed to launch.
+dependencies. Node/npm is not needed to launch, but the Python adapter is required.
 
 ```sh
 just web-build
 ```
 
-Serve `target/web/`, including `pkg/` and `fonts/`, over HTTP(S), not `file://`.
-Keep `fonts/OFL.txt` with the distribution. Static output contains no selected
-user JSON and starts with the small sample; choose **Open dump…** to load the
-official test session or another file.
+Serve `target/web/`, including `pkg/`, `startup.mjs` and `fonts/`, through the
+Python adapter using `--site target/web`. Keep `fonts/OFL.txt` with the
+distribution. Browser assets do not contain a session or sample dataset.
 
 ## Validation
 
@@ -294,21 +329,21 @@ official test session or another file.
 cargo fmt --check
 cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
-node --test web/documents.test.mjs
+node --test web/startup.test.mjs
 python3 -m unittest discover -s scripts -p 'test_*.py' -v
 cargo +nightly clippy --locked --lib --target wasm32-unknown-unknown -- -D warnings
 just web-build
 ```
 
 The full-data heap-map test runs in the normal Rust suite without Python.
-For recording-import integration tests, install the pinned ZView backend and
-dependencies from [CI](.github/workflows/ci.yml), set `ZVIEW_PYTHON` to that
-interpreter, and set `ZVIEW_GUI_PYTHON` to the separate adapter environment
-described above before running `cargo test --locked -- --include-ignored`. CI also
-regenerates the official fixture and compares it with the committed JSON.
+For native adapter integration tests, set `ZVIEW_GUI_PYTHON` to an interpreter
+with this checkout's adapter installed before running
+`cargo test --locked -- --include-ignored`. CI separately regenerates the
+official fixture using its pinned exporter environment and compares it with
+the committed JSON.
 
 Builds and headless tests do not replace browser/native visual checks. Inspect
-file-error recovery, navigation, playback, heap maps, zoom, and resizing.
+adapter failure/recovery, navigation, playback, heap maps, zoom, and resizing.
 Firefox/Safari and hosted CI still require validation; the browser CI job uses
 a rolling nightly toolchain. See [CONTRIBUTING.md](CONTRIBUTING.md) for maintainer
 conventions.

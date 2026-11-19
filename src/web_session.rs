@@ -14,59 +14,6 @@ use gpui_kit::component::tag::Tag;
 #[path = "web_native_picker.rs"]
 mod picker;
 
-/// A popover trigger with an explicit, stable focus handle for keyboard access.
-#[derive(IntoElement)]
-struct SessionStatusTrigger {
-    focus: FocusHandle,
-    label: SharedString,
-    icon: AnyElement,
-    bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
-    selected: bool,
-}
-
-impl gpui_kit::component::Selectable for SessionStatusTrigger {
-    fn selected(mut self, selected: bool) -> Self {
-        self.selected = selected;
-        self
-    }
-
-    fn is_selected(&self) -> bool {
-        self.selected
-    }
-}
-
-impl RenderOnce for SessionStatusTrigger {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let label = self.label.clone();
-        let focus = self.focus.clone();
-        div()
-            .id("sidebar-session-toggle")
-            .track_focus(&self.focus)
-            .tab_stop(true)
-            .role(Role::Button)
-            .aria_label(self.label)
-            .size_6()
-            .relative()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_md()
-            .border_1()
-            .border_color(rgb(if self.selected { PURPLE } else { BORDER }))
-            .hover(|style| style.bg(rgb(CARD)))
-            .focus_visible(|style| style.border_color(rgb(PURPLE)))
-            .cursor_pointer()
-            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                focus.focus(window, cx)
-            })
-            .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
-            .child(self.icon)
-            .child(div().absolute().inset_0().child(
-                canvas(move |rect, _, _| self.bounds.set(rect), |_, _, _, _| {}).size_full(),
-            ))
-    }
-}
-
 pub(super) struct Draft {
     pub open: bool,
     pub mode: Mode,
@@ -259,6 +206,14 @@ fn provenance_note(context: &BuildContext) -> impl IntoElement {
 }
 
 impl ThreadsApp {
+    fn reveal_session_controls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.collapsed = false;
+        // The same focus handle follows the button into the expanded panel.
+        // Tab can then continue to Configure and the acquisition action.
+        self.adapter.session_focus.focus(window, cx);
+        cx.notify();
+    }
+
     pub(crate) fn adapter_session_controls(
         &self,
         window: &Window,
@@ -270,9 +225,16 @@ impl ThreadsApp {
         if !self.collapsed {
             return Some(
                 div()
+                    .id("sidebar-session-panel")
+                    .track_focus(&self.adapter.session_focus)
+                    .tab_stop(true)
+                    .aria_label("Session controls")
                     .w_full()
                     .min_w_0()
                     .bg(rgb(crate::BG))
+                    .border_1()
+                    .border_color(rgb(crate::BG))
+                    .focus_visible(|style| style.border_color(rgb(PURPLE)))
                     .py_2()
                     .px_2()
                     .flex()
@@ -284,7 +246,7 @@ impl ThreadsApp {
         }
         let indicator = self.adapter.indicator();
         let label = format!(
-            "Session: {}. {}. Open session controls",
+            "Session: {}. {}. Expand sidebar to show session controls",
             indicator.as_str(),
             session_labels(
                 self.adapter.state.session.as_ref(),
@@ -292,21 +254,39 @@ impl ThreadsApp {
             )
             .join(". ")
         );
-        let view = cx.entity().downgrade();
+        let bounds = self.adapter.session_toggle_bounds.clone();
         Some(
-            gpui_kit::component::popover::Popover::new("sidebar-session-popover")
-                .anchor(Anchor::BottomLeft)
-                .open(self.adapter.session_popover_open)
-                .on_open_change(cx.listener(|this, open: &bool, _, cx| {
-                    this.adapter.session_popover_open = *open;
-                    cx.notify();
+            div()
+                .id("sidebar-session-toggle")
+                .debug_selector(|| "sidebar-session-toggle".into())
+                .track_focus(&self.adapter.session_focus)
+                .tab_stop(true)
+                .role(Role::Button)
+                .aria_label(label.clone())
+                .size_6()
+                .relative()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_md()
+                .border_1()
+                .border_color(rgb(BORDER))
+                .hover(|style| style.bg(rgb(CARD)))
+                .focus_visible(|style| style.border_color(rgb(PURPLE)))
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.reveal_session_controls(window, cx);
                 }))
-                .trigger(SessionStatusTrigger {
-                    focus: self.adapter.session_focus.clone(),
-                    label: label.into(),
-                    selected: false,
-                    bounds: self.adapter.session_toggle_bounds.clone(),
-                    icon: Icon::new(match indicator {
+                .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                        this.reveal_session_controls(window, cx);
+                    }
+                }))
+                .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
+                .child(
+                    Icon::new(match indicator {
                         SessionIndicator::Healthy => assets::IconName::Activity,
                         SessionIndicator::Busy => assets::IconName::LoaderCircle,
                         SessionIndicator::Waiting
@@ -320,18 +300,13 @@ impl ThreadsApp {
                         SessionIndicator::Waiting | SessionIndicator::Warning => 0xe0b76d,
                         SessionIndicator::Failed => 0xf08b9f,
                         SessionIndicator::Idle => MUTED,
-                    }))
-                    .into_any_element(),
-                })
-                .content(move |_, window, cx| {
-                    div()
-                        .id("sidebar-session-popover-content")
-                        .w(px(296.))
-                        .max_w((window.viewport_size().width - px(48.)).max(px(1.)))
-                        .children(view.upgrade().and_then(|view| {
-                            view.update(cx, |app, cx| app.adapter_session_panel(window, cx))
-                        }))
-                })
+                    })),
+                )
+                .child(
+                    div().absolute().inset_0().child(
+                        canvas(move |rect, _, _| bounds.set(rect), |_, _, _, _| {}).size_full(),
+                    ),
+                )
                 .into_any_element(),
         )
     }
@@ -359,9 +334,9 @@ impl ThreadsApp {
         } else if state.pending {
             "Updating session…".into()
         } else if indicator == SessionIndicator::Waiting {
-            format!("{mode} · Waiting for frames")
+            format!("{mode} · Waiting")
         } else if indicator == SessionIndicator::Warning {
-            format!("{mode} · Read warning")
+            format!("{mode} · Warning")
         } else {
             labels[0].clone()
         };
@@ -452,18 +427,16 @@ impl ThreadsApp {
                                     status,
                                     animate,
                                     false,
-                                ).flex_shrink_1())
+                                ).flex_1())
                                 .when(
-                                    state.session.is_some()
-                                        && state.connection == Connection::Connected,
-                                    |el| {
-                                        el.child(layout::note_with_shimmer(
-                                            "session-header-progress",
-                                            labels[2].clone(),
-                                            animate,
-                                            false,
-                                        ).flex_shrink_1())
-                                    },
+                                    state.connection == Connection::Connected
+                                        && state.session.as_ref().is_some_and(|session| {
+                                            session.mode() == Mode::Replay
+                                                || session.status == crate::adapter_protocol::Status::Reading
+                                        }),
+                                    |el| el.child(layout::note_with_shimmer(
+                                        "session-header-progress", labels[2].clone(), animate, false,
+                                    ).flex_shrink_1()),
                                 )
                         .child(
                     div()
@@ -538,6 +511,23 @@ impl ThreadsApp {
                             .w_full()
                             .text_ellipsis_start()),
                 )
+                .when(indicator == SessionIndicator::Waiting, |el| {
+                    el.child(
+                        layout::wrapped_note(
+                            "session-waiting-detail",
+                            "Waiting for new live measurements. Previously received values may be out of date.",
+                            false,
+                        ).w_full().text_color(rgb(0xe0b76d)),
+                    )
+                })
+                .when(indicator == SessionIndicator::Warning, |el| {
+                    el.when_some(state.session.as_ref().and_then(|s| s.last_notice.clone()), |el, notice| {
+                        el.child(
+                            layout::wrapped_note("session-read-warning", notice, false)
+                                .w_full().text_color(rgb(0xe0b76d)),
+                        )
+                    })
+                })
                 .when_some(state.session.as_ref().and_then(|s| s.error.clone()), |el, error| {
                     el.child(div().debug_selector(|| "session-panel-error".into())
                         .text_xs().text_color(rgb(0xf08b9f)).whitespace_normal().child(error))

@@ -1,14 +1,12 @@
-"""Decode a recording once, preserving timestamps for the desktop charts.
+"""Regenerate chart test fixtures from a ZView recording and its matching ELF.
 
-Run from the repository root with PYTHONPATH=src and ZView's dependencies installed.
+Run from the repository root in CI's pinned exporter environment.
 """
 
 import argparse
-import contextlib
 import json
 import math
 import queue
-import sys
 import threading
 from pathlib import Path
 
@@ -91,20 +89,5 @@ def main():
     print(f"Exported {len(frames)} frames, 0–{frames[-1]['elapsed_seconds']:.3f}s")
 
 
-def desktop_import():
-    """Private stdout-only bridge used by the native recording importer."""
-    try:
-        # Decoder diagnostics must never corrupt the JSON protocol.
-        with contextlib.redirect_stdout(sys.stderr):
-            frames = export(Path(sys.argv[2]), Path(sys.argv[3]), math.inf)
-        json.dump(frames, sys.stdout, allow_nan=False)
-    except Exception as exc:
-        print(f"Recording import failed: {exc}", file=sys.stderr)
-        return 1
-    return 0
-
-
 if __name__ == "__main__":
-    if sys.argv[1:2] == ["--desktop-import"]:
-        sys.exit(desktop_import())
     main()

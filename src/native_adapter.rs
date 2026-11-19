@@ -10,17 +10,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-const HELP: &str = "Native ZView\n\
-    cargo run -- [--python PYTHON] [--data-root DIRECTORY]\n\
+const HELP: &str = "ZView native (zview-gui-rs)\n\
+    cargo run -- [--python PYTHON] [--data-root DIRECTORY] [--build-dir DIRECTORY]\n\
     cargo run -- --adapter http://127.0.0.1:PORT\n\
-    cargo run -- [--offline] [DUMP.json]\n\
     Python defaults to ZVIEW_GUI_PYTHON, then python3. Install this checkout's\n\
-    adapter in that interpreter. --offline opens the bundled sample without Python.";
+    adapter in that interpreter. The Python adapter is required for all native sessions.\n\
+    --build-dir (-d) starts Live once the adapter connects. Relative build paths\n\
+    are resolved under --data-root (default: current directory). Connecting does not flash firmware.";
 
 pub(crate) struct Options {
-    pub offline: bool,
-    pub source: Option<PathBuf>,
     pub endpoint: Option<String>,
+    pub build_dir: Option<String>,
     python: OsString,
     data_root: PathBuf,
 }
@@ -28,9 +28,8 @@ pub(crate) struct Options {
 impl Options {
     pub fn parse(args: impl Iterator<Item = OsString>) -> Result<Self, String> {
         let mut options = Self {
-            offline: false,
-            source: None,
             endpoint: None,
+            build_dir: None,
             python: std::env::var_os("ZVIEW_GUI_PYTHON").unwrap_or_else(|| "python3".into()),
             data_root: std::env::current_dir().map_err(|e| e.to_string())?,
         };
@@ -39,8 +38,7 @@ impl Options {
         while let Some(arg) = args.next() {
             match arg.to_str() {
                 Some("--help" | "-h") => return Err(HELP.into()),
-                Some("--offline") => options.offline = true,
-                Some("--adapter" | "--python" | "--data-root") => {
+                Some("--adapter" | "--python" | "--data-root" | "--build-dir" | "-d") => {
                     let value = args
                         .next()
                         .ok_or_else(|| format!("Missing value for {arg:?}."))?;
@@ -54,6 +52,14 @@ impl Options {
                             options.python = value;
                             configured = true;
                         }
+                        "--build-dir" | "-d" => {
+                            let value = value.to_str().ok_or("Build directory must be UTF-8.")?;
+                            if value.trim().is_empty() {
+                                return Err("Build directory must not be empty.".into());
+                            }
+                            options.build_dir = Some(value.to_owned());
+                            configured = true;
+                        }
                         _ => {
                             options.data_root = PathBuf::from(value);
                             configured = true;
@@ -63,17 +69,18 @@ impl Options {
                 Some(value) if value.starts_with('-') => {
                     return Err(format!("Unknown option: {value}\n{HELP}"));
                 }
-                _ if options.source.is_none() => options.source = Some(PathBuf::from(arg)),
-                _ => return Err(HELP.into()),
+                _ => {
+                    return Err(format!(
+                        "Unexpected argument: {arg:?}. Choose Live or Replay through Configure session.\n{HELP}"
+                    ));
+                }
             }
         }
-        if options.source.is_some() {
-            options.offline = true;
-        }
-        if (options.offline && (configured || options.endpoint.is_some()))
-            || (options.endpoint.is_some() && configured)
-        {
-            return Err("Choose offline JSON, an existing adapter, or an owned Python adapter; do not combine them.".into());
+        if options.endpoint.is_some() && configured {
+            return Err(
+                "Choose an existing adapter or an owned Python adapter; do not combine them."
+                    .into(),
+            );
         }
         Ok(options)
     }
@@ -122,6 +129,64 @@ pub(crate) struct OwnedAdapter {
     endpoint: String,
 }
 
+type Started = Result<(String, Option<OwnedAdapter>), String>;
+
+/// Retain startup ownership even if the UI cancels its connection task.
+/// Closing during startup waits for this worker and cleans up its result.
+pub(crate) struct Startup(Option<std::thread::JoinHandle<Started>>);
+
+impl Startup {
+    pub fn new(options: Options) -> Self {
+        Self(Some(std::thread::spawn(move || options.start())))
+    }
+
+    pub fn try_finish(&mut self) -> Option<Started> {
+        if !self.0.as_ref()?.is_finished() {
+            return None;
+        }
+        Some(
+            self.0
+                .take()
+                .unwrap()
+                .join()
+                .unwrap_or_else(|_| Err("Adapter startup worker failed.".into())),
+        )
+    }
+}
+
+impl Drop for Startup {
+    fn drop(&mut self) {
+        if let Some(worker) = self.0.take() {
+            // Dropping a successful result also shuts down its owned adapter.
+            drop(worker.join());
+        }
+    }
+}
+
+/// A joinable cleanup worker survives both window Close and system Quit.
+pub(crate) struct Shutdown(Option<std::thread::JoinHandle<()>>);
+
+impl Shutdown {
+    pub fn new(startup: Option<Startup>, process: Option<OwnedAdapter>) -> Self {
+        Self(Some(std::thread::spawn(move || {
+            drop(startup);
+            drop(process);
+        })))
+    }
+
+    pub fn finished(&self) -> bool {
+        self.0.as_ref().is_none_or(|worker| worker.is_finished())
+    }
+}
+
+impl Drop for Shutdown {
+    fn drop(&mut self) {
+        if let Some(worker) = self.0.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
 impl OwnedAdapter {
     fn start(python: &OsString, root: &std::path::Path) -> Result<Self, String> {
         // Isolated Python uses the selected environment's installed package,
@@ -162,7 +227,7 @@ impl OwnedAdapter {
                 crate::adapter_protocol::PROTOCOL_VERSION
             ));
         }
-        eprintln!("ZView adapter {}: {}", ready.package_version, ready.url);
+        eprintln!("ZView adapter {} ready.", ready.package_version);
         process.endpoint = validate_endpoint(&ready.url)?;
         Ok(process)
     }
@@ -177,24 +242,31 @@ impl OwnedAdapter {
 impl Drop for OwnedAdapter {
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {
-            // EOF is the graceful shutdown request. Do not block the UI while
-            // the backend disconnects hardware. Never terminate an attached server.
-            drop(child.stdin.take());
-            std::thread::spawn(move || {
-                let deadline = Instant::now() + Duration::from_secs(5);
-                loop {
-                    if matches!(child.try_wait(), Ok(Some(_))) {
-                        return;
-                    }
-                    if Instant::now() >= deadline {
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(50));
-                }
-                let _ = child.kill();
-                let _ = child.wait();
-            });
+            // EOF requests graceful session/hardware cleanup. The native close
+            // flow runs this on a worker and awaits it before quitting. A
+            // detached reaper would be lost when the application exits.
+            // Attached servers never have an OwnedAdapter.
+            stop_child(&mut child, Duration::from_secs(5));
         }
+    }
+}
+
+fn stop_child(child: &mut Child, grace: Duration) {
+    drop(child.stdin.take());
+    let deadline = Instant::now() + grace;
+    loop {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return;
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    // Kill only this owned child, then reap it before returning.
+    let _ = child.kill();
+    if let Err(error) = child.wait() {
+        eprintln!("Cannot reap native adapter: {error}");
     }
 }
 
@@ -337,6 +409,83 @@ pub(crate) async fn connect(
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    fn test_child(script: &str) -> Child {
+        Command::new("/bin/sh")
+            .args(["-c", script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn owned_adapter_drop_waits_for_eof_cleanup() {
+        let mut child = test_child("cat >/dev/null; printf cleaned");
+        let mut stdout = child.stdout.take().unwrap();
+        drop(OwnedAdapter {
+            child: Some(child),
+            endpoint: String::new(),
+        });
+        let mut result = String::new();
+        stdout.read_to_string(&mut result).unwrap();
+        assert_eq!(result, "cleaned");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn unresponsive_owned_child_is_killed_and_reaped_not_another_process() {
+        let mut child = test_child("exec sleep 30");
+        let mut external = test_child("cat >/dev/null");
+        stop_child(&mut child, Duration::from_millis(25));
+        assert!(child.try_wait().unwrap().is_some());
+        assert!(external.try_wait().unwrap().is_none());
+        stop_child(&mut external, Duration::from_secs(1));
+        assert!(external.try_wait().unwrap().is_some());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn closing_during_startup_waits_and_cleans_up_the_result() {
+        let mut child = test_child("cat >/dev/null; printf cleaned");
+        let mut stdout = child.stdout.take().unwrap();
+        let startup = Startup(Some(std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            Ok((
+                String::new(),
+                Some(OwnedAdapter {
+                    child: Some(child),
+                    endpoint: String::new(),
+                }),
+            ))
+        })));
+        drop(startup);
+        let mut result = String::new();
+        stdout.read_to_string(&mut result).unwrap();
+        assert_eq!(result, "cleaned");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn system_quit_during_window_cleanup_joins_the_same_worker() {
+        let mut child = test_child("cat >/dev/null; printf cleaned");
+        let mut stdout = child.stdout.take().unwrap();
+        let worker = Shutdown::new(
+            None,
+            Some(OwnedAdapter {
+                child: Some(child),
+                endpoint: String::new(),
+            }),
+        );
+        // The quit hook drops this guard even if window Close already took
+        // the owned process out of the UI's process slot.
+        drop(worker);
+        let mut result = String::new();
+        stdout.read_to_string(&mut result).unwrap();
+        assert_eq!(result, "cleaned");
+    }
+
     #[test]
     fn endpoints_are_local_explicit_and_not_redirectable() {
         for value in ["http://127.0.0.1:8765", "http://localhost:1234/"] {
@@ -356,18 +505,56 @@ mod tests {
     }
 
     #[test]
-    fn positional_json_preserves_offline_workflow() {
-        let options =
-            Options::parse(["file with spaces.json"].into_iter().map(OsString::from)).unwrap();
-        assert!(options.offline);
-        assert_eq!(options.source, Some("file with spaces.json".into()));
+    fn native_options_validate_adapter_configuration() {
+        assert!(Options::parse(std::iter::empty()).is_ok());
         for args in [
             vec!["--adapter"],
-            vec!["--offline", "--python", "python3"],
-            vec!["--adapter", "http://localhost:1234", "dump.json"],
+            vec!["--python"],
+            vec!["--data-root"],
+            vec!["--build-dir"],
+            vec!["-d"],
+            vec!["--build-dir", ""],
+            vec!["--adapter", "http://localhost:1234", "--python", "python3"],
+            vec!["--adapter", "http://localhost:1234", "--build-dir", "build"],
         ] {
             assert!(Options::parse(args.into_iter().map(OsString::from)).is_err());
         }
+    }
+
+    #[test]
+    fn native_build_argument_preserves_paths_and_data_root() {
+        assert!(
+            Options::parse(std::iter::empty())
+                .unwrap()
+                .build_dir
+                .is_none()
+        );
+        for flag in ["--build-dir", "-d"] {
+            let options = Options::parse(
+                [
+                    "--data-root",
+                    "/project workspace",
+                    flag,
+                    "application build",
+                ]
+                .into_iter()
+                .map(OsString::from),
+            )
+            .unwrap();
+            assert_eq!(options.build_dir.as_deref(), Some("application build"));
+            assert_eq!(options.data_root, PathBuf::from("/project workspace"));
+            assert!(options.endpoint.is_none());
+        }
+        let options = Options::parse(
+            ["--build-dir", "/project workspace/application build"]
+                .into_iter()
+                .map(OsString::from),
+        )
+        .unwrap();
+        assert_eq!(
+            options.build_dir.as_deref(),
+            Some("/project workspace/application build")
+        );
     }
 
     #[test]

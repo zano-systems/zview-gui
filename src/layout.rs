@@ -207,6 +207,25 @@ pub(super) fn note_with_shimmer(
     animate: bool,
     tooltip: bool,
 ) -> impl IntoElement + Styled {
+    note_element(id, text, animate, tooltip, false)
+}
+
+/// Status and warning text must remain readable, not elided like metadata.
+pub(super) fn wrapped_note(
+    id: impl Into<SharedString>,
+    text: impl Into<SharedString>,
+    animate: bool,
+) -> impl IntoElement + Styled {
+    note_element(id, text, animate, false, true)
+}
+
+fn note_element(
+    id: impl Into<SharedString>,
+    text: impl Into<SharedString>,
+    animate: bool,
+    tooltip: bool,
+    wrap: bool,
+) -> impl IntoElement + Styled {
     let id = id.into();
     let text = text.into();
     let content = if animate {
@@ -227,7 +246,8 @@ pub(super) fn note_with_shimmer(
         .flex_shrink_0()
         .text_xs()
         .text_color(rgb(MUTED))
-        .truncate()
+        .when(wrap, |el| el.whitespace_normal())
+        .when(!wrap, |el| el.truncate())
         .when(tooltip, |el| {
             el.tooltip(move |window, cx| Tooltip::new(text.clone()).build(window, cx))
         })

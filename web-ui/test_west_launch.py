@@ -269,6 +269,33 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(served["root"], self.top)
         self.assertTrue(served["open_browser"])
 
+    def test_relative_build_uses_explicit_data_root_not_working_directory(self):
+        for flag in ("-d", "--build-dir"):
+            with self.subTest(flag=flag):
+                code, served, _ = self.run_main("--data-root", str(self.top), flag, "build")
+                self.assertEqual(code, 0)
+                self.assertEqual(served["root"], self.top)
+                self.assertEqual(served["live"], {"build_dir": "build"})
+
+    def test_absolute_build_still_works_with_explicit_data_root(self):
+        code, served, _ = self.run_main("--data-root", str(self.top), "-d", str(self.build))
+        self.assertEqual(code, 0)
+        self.assertEqual(served["live"], {"build_dir": "build"})
+
+    def test_relative_build_without_data_root_uses_working_directory(self):
+        with patch("os.getcwd", return_value=str(self.top)):
+            code, served, _ = self.run_main("-d", "build")
+        self.assertEqual(code, 0)
+        self.assertEqual(served["live"], {"build_dir": "build"})
+
+    def test_build_outside_explicit_data_root_is_rejected(self):
+        for build in (str(self.build), "../build"):
+            with self.subTest(build=build):
+                code, served, error = self.run_main(
+                    "--data-root", str(self.site), "-d", build)
+                self.assertEqual((code, served), (1, {}))
+                self.assertIn("Pass --data-root containing the build and ELF", error)
+
     def test_overrides_without_a_build_and_missing_sites_are_errors(self):
         code, served, err = self.run_main("-r", "jlink")
         self.assertEqual((code, served), (1, {}))

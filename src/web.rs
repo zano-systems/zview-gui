@@ -11,18 +11,6 @@ thread_local! {
 }
 
 #[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_namespace = window, js_name = zviewOpenJson)]
-    fn pick_json();
-}
-
-impl ThreadsApp {
-    pub(super) fn open(&mut self, _: &ClickEvent, _: &mut Window, _: &mut Context<Self>) {
-        pick_json();
-    }
-}
-
-#[wasm_bindgen]
 pub async fn start(ui_font: Vec<u8>, mono_font: Vec<u8>) -> Result<(), JsValue> {
     console_error_panic_hook::set_once();
     if APPLICATION.with(|app| app.borrow().is_some()) {
@@ -39,7 +27,7 @@ pub async fn start(ui_font: Vec<u8>, mono_font: Vec<u8>) -> Result<(), JsValue> 
         .with_http_client(http)
         .with_assets(app_assets::AppAssets);
     // WebPlatform prepares the GPU asynchronously before invoking this closure.
-    // Do not accept an initial document until the window actually exists.
+    // Connect the adapter only after the window actually exists.
     let (ready, launched) = futures_channel::oneshot::channel();
     let handle = app.run_embedded(move |cx| {
         init(cx);
@@ -52,9 +40,8 @@ pub async fn start(ui_font: Vec<u8>, mono_font: Vec<u8>) -> Result<(), JsValue> 
             theme.font_family = "IBM Plex Sans".into();
             theme.mono_font_family = "JetBrains Mono".into();
         });
-        let frames = model::parse(include_str!("../sample.json")).expect("valid bundled dump");
         let view = open_window(WindowOptions::default(), cx, |window, cx| {
-            cx.new(|cx| ThreadsApp::from_frames(frames, None, None, window, cx))
+            cx.new(|cx| ThreadsApp::adapter_session(window, cx))
         })
         .expect("open ZView browser window");
         VIEW.with(|slot| *slot.borrow_mut() = Some(view));
@@ -72,39 +59,6 @@ pub async fn start(ui_font: Vec<u8>, mono_font: Vec<u8>) -> Result<(), JsValue> 
 pub fn set_reduced_motion(reduce: bool) -> Result<(), JsValue> {
     update_view(|_, _, cx| {
         cx.set_reduce_motion(reduce);
-        cx.notify();
-    })
-}
-
-/// Install browser-provided text without introducing filesystem access.
-/// Invalid input leaves the previous frames and selection visible.
-#[wasm_bindgen]
-pub fn load_json(text: &str, name: &str) -> Result<(), JsValue> {
-    let frames = if text.len() > 16 * 1024 * 1024 {
-        Err("Dump exceeds the 16 MiB limit.".to_string())
-    } else {
-        model::parse(text)
-    };
-    update_view(|this, window, cx| {
-        if this.adapter.available {
-            this.error = Some("Use the sidebar session card to change the adapter session; open the JSON launcher for dumps.".into());
-            cx.notify();
-            return;
-        }
-        match frames {
-            Ok(frames) => this.install(frames, PathBuf::from(name), None, window, cx),
-            Err(error) => this.error = Some(error),
-        }
-        cx.notify();
-    })
-}
-
-/// File size, UTF-8, and browser read errors belong in the same non-obstructive
-/// banner as parse errors; they must not replace the current document.
-#[wasm_bindgen]
-pub fn show_file_error(message: &str) -> Result<(), JsValue> {
-    update_view(|this, _, cx| {
-        this.error = Some(message.to_owned());
         cx.notify();
     })
 }

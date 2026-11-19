@@ -1,10 +1,8 @@
-import io
-import json
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from export_recording import TimedReplay, TimestampQueue, desktop_import, export
+from export_recording import TimedReplay, TimestampQueue, export
 from zview.backend.base import (
     HeapInfo,
     MemSlabInfo,
@@ -16,28 +14,6 @@ from zview.backend.base import (
 
 
 class ExportTests(unittest.TestCase):
-    def test_desktop_bridge_keeps_diagnostics_out_of_json(self):
-        def decode(*args):
-            print("decoder diagnostic")
-            return [{"threads": [], "elapsed_seconds": 0}]
-
-        output, errors = io.StringIO(), io.StringIO()
-        with patch("export_recording.export", side_effect=decode), patch(
-            "sys.argv", ["bridge", "--desktop-import", "recording", "firmware"]
-        ), patch("sys.stdout", output), patch("sys.stderr", errors):
-            self.assertEqual(desktop_import(), 0)
-        self.assertEqual(json.loads(output.getvalue()), [{"threads": [], "elapsed_seconds": 0}])
-        self.assertIn("decoder diagnostic", errors.getvalue())
-
-    def test_desktop_bridge_reports_errors_without_a_document(self):
-        output, errors = io.StringIO(), io.StringIO()
-        with patch("export_recording.export", side_effect=ValueError("bad recording")), patch(
-            "sys.argv", ["bridge", "--desktop-import", "recording", "firmware"]
-        ), patch("sys.stdout", output), patch("sys.stderr", errors):
-            self.assertEqual(desktop_import(), 1)
-        self.assertEqual(output.getvalue(), "")
-        self.assertIn("bad recording", errors.getvalue())
-
     def test_timestamp_is_attached_before_backend_advances(self):
         backend = TimedReplay("unused")
         backend._pace_to(2.5)

@@ -546,7 +546,7 @@ fn every_screen_keeps_its_sections_visible_with_large_lists(cx: &mut TestAppCont
                     });
                     window.draw(cx).clear(cx);
                 });
-                let toolbar = cx.debug_bounds("app-toolbar").unwrap();
+                let toolbar = cx.debug_bounds("app-header-content").unwrap();
                 let footer = cx.debug_bounds("session-footer").unwrap();
                 assert!(
                     toolbar.top() >= px(0.) && footer.bottom() <= px(height),

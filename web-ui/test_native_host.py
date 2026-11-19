@@ -46,6 +46,9 @@ class NativeHostTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(process.wait(), 10)
                 diagnostics = (await process.stderr.read()).decode()
                 self.assertEqual(process.returncode, 0, diagnostics)
+                self.assertNotIn("open http://", diagnostics)
+                self.assertNotIn("Ctrl+C", diagnostics)
+                self.assertIn("stopping", diagnostics)
                 self.assertEqual(await process.stdout.read(), b"")
             finally:
                 if process.returncode is None:

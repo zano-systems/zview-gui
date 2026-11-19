@@ -70,6 +70,12 @@ assets::icon_assets!(
 
 pub(super) struct AppAssets;
 
+#[cfg(not(target_family = "wasm"))]
+assets::icon_assets!(
+    NativeWindowIcons,
+    [WindowClose, WindowMaximize, WindowMinimize, WindowRestore]
+);
+
 impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         if let Some((_, bytes)) = super::help::MARK_LAYERS.iter().find(|(p, _)| *p == path) {
@@ -83,6 +89,9 @@ impl AssetSource for AppAssets {
         }
         #[cfg(not(target_family = "wasm"))]
         {
+            if let Some(bytes) = NativeWindowIcons.load(path)? {
+                return Ok(Some(bytes));
+            }
             assets::Assets.load(path)
         }
         #[cfg(target_family = "wasm")]
@@ -94,6 +103,8 @@ impl AssetSource for AppAssets {
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
         #[cfg(not(target_family = "wasm"))]
         let mut paths = assets::Assets.list(path)?;
+        #[cfg(not(target_family = "wasm"))]
+        paths.extend(NativeWindowIcons.list(path)?);
         #[cfg(target_family = "wasm")]
         let mut paths = Vec::new();
         paths.extend(ControlIcons.list(path)?);
@@ -107,6 +118,21 @@ impl AssetSource for AppAssets {
 #[cfg(test)]
 mod tests {
     use super::{AppAssets, AssetSource, ControlIcons};
+
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn native_titlebar_icons_are_bundled() {
+        for path in [
+            "icons/panel-left-open.svg",
+            "icons/panel-left-close.svg",
+            "icons/window-close.svg",
+            "icons/window-maximize.svg",
+            "icons/window-minimize.svg",
+            "icons/window-restore.svg",
+        ] {
+            assert!(AppAssets.load(path).unwrap().is_some(), "{path}");
+        }
+    }
 
     #[test]
     fn web_search_controls_and_empty_state_icons_are_bundled() {

@@ -36,8 +36,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - name: Test browser document loading
-        run: node --test web/documents.test.mjs
+      - name: Test adapter-backed browser startup
+        run: node --test web/startup.test.mjs
       - name: Test local web launcher and development packaging
         run: |
           mkdir -p target
@@ -114,7 +114,6 @@ jobs:
           # Use the pinned build tools rather than creating an isolated build env.
           python -m pip install --no-build-isolation --no-deps "zview @ git+https://github.com/rodrigopex/zview.git@${ZVIEW_REVISION}"
           python -m pip check
-          echo "ZVIEW_PYTHON=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
 
       - name: Test recording exporter
         run: python -m unittest discover -s . -p test_export_recording.py -v

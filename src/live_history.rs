@@ -537,23 +537,6 @@ impl History {
         )
     }
 
-    pub fn footer_label(&self) -> String {
-        if self.is_empty() {
-            return "History · waiting for readings".into();
-        }
-        format!(
-            "History · {:.1}s · {} changes · {:.0} KiB{}",
-            self.retained_seconds(),
-            self.changes(),
-            self.bytes() as f64 / 1024.,
-            if self.limited() {
-                " · memory limited"
-            } else {
-                ""
-            }
-        )
-    }
-
     pub fn origin(&self) -> Option<f64> {
         self.origin
     }

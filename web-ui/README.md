@@ -3,7 +3,8 @@
 Phase 1 connects the **existing GPUI Rust/WASM frontend** to the ZView Python
 package. There is no second UI framework or Rust server. Rust owns HTTP commands,
 WebSocket consumption, typed messages, client state and rendering. The browser's
-existing JavaScript host still initializes GPUI and handles local JSON files.
+JavaScript host only initializes GPUI, supplies fonts/preferences, and connects
+the required adapter. Rust owns all session state.
 
 The adapter uses `Target.open()`, `Core`, and `serialize_frame()` directly. It
 does not drive the TUI or implement another ELF/memory-read decoder.
@@ -33,12 +34,16 @@ python3.12 -m venv .venv-web
 The native Rust application also uses this adapter and the shared session
 controls. After the editable install above, run
 `cargo run -- --python .venv-web/bin/python` from the repository root.
+Add `--data-root /path/to/workspace --build-dir build` to start Live after
+the native-owned adapter connects. `-d` is an alias for `--build-dir`; paths
+remain constrained by the adapter's data root. Without a build argument,
+choose Live or Replay through Configure session.
 Unlike browser serving, native does not require the WASM tools or a built site.
 Its internal `zview_gui.native_host` process starts the existing server on a
 free loopback port, reports readiness to the parent, and shuts down on parent
 stdin closure. Browser CLI and west launch behavior are unchanged. See the main
-README's [native workflow](../README.md#native-live-and-replay) for attachment,
-data-root and standalone JSON options.
+README's [native workflow](../README.md#native-live-and-replay) for adapter
+attachment, interpreter selection and data-root options.
 
 An editable install serves the checkout's `target/web`; an installed wheel
 serves the site packaged in it, and `--site DIR` serves any other build. Without
@@ -46,6 +51,15 @@ serves the site packaged in it, and `--site DIR` serves any other build. Without
 directory). `-d BUILD_DIR` connects Live at startup, with
 `-e/-r/-t/--domain/--frequency` overrides; `--port 0` picks a free port, and
 `--no-open` keeps the browser closed.
+
+As in native, a relative `--build-dir` is resolved under an explicit
+`--data-root`, or under the current directory when no data root is supplied:
+
+```sh
+just web-gui --python .venv-web/bin/python --data-root /path/to/workspace --build-dir build
+```
+
+An absolute build path also works, provided it stays inside the data root.
 
 From a Zephyr west workspace, `west zview-gui` runs the installed package for
 the current build directory; see the main README's
@@ -90,23 +104,36 @@ Paths refer to files on the adapter machine, not browser-uploaded files. Relativ
 paths resolve under `--data-root`; absolute paths must stay inside it too. The
 input limit is 32 MiB per file, and symlink escapes are rejected.
 
-The existing `just web-ui` JSON launcher and static hosting remain supported.
-The Rust client probes `/api/session`; a 404 means static/JSON-only hosting, so
-it does not show adapter controls or start a reconnect loop.
+`just web-gui --python .venv-web/bin/python` builds the current checkout and
+launches that environment's adapter with `--site target/web`. Add `--skip-build`
+to reuse a complete current build; other adapter options are forwarded.
+The browser starts with no measurements and requires the adapter's API.
+Missing APIs and transport failures show a visible error and retry while
+retaining the session controls. Native and web use the same Live/Replay contract.
 
 ## Phase 2 — Build-aware session configuration
 
+Native and web use the same 32-point application header: sidebar toggle,
+About and Help & shortcuts, separator, and breadcrumbs. Only native supplies
+OS window controls and dragging. Kernel objects starts expanded on both hosts.
+The shared sidebar footer keeps the cyan "Backed by Zano" company link above
+the session panel; the logo remains a keyboard-accessible link when collapsed.
+
 Session context and actions sit below navigation in the left sidebar on every
-inspection screen, freeing the main pane for charts and tables. Status, observed
-progress/rate and right-aligned icon-only actions share a non-wrapping row;
-board/runner or recording context and the ELF path appear below. Long ELF paths
+inspection screen, freeing the main pane for charts and tables. Compact status,
+progress/rate, and right-aligned icon-only actions share the header row.
+Live rate is shown only while reading; connecting and inactive states leave
+that space to the status. Replay retains its decoded-frame count.
+Board/runner or recording context and the ELF path appear below, followed by
+wrapped waiting/read-warning details when needed. Long ELF paths
 elide from the beginning. Session labels and the session container do not trigger
 tooltips. Action buttons retain their descriptive tooltips, and the History cache
 info icon explains its accounting on hover or keyboard focus.
-The adapter sidebar is wider than the standalone sidebar to accommodate this panel.
+The sidebar reserves space for this panel.
 Navigation scrolls independently; session content is capped at 45% of the viewport
 height and scrolls on short windows. When collapsed, the sidebar offers a labelled
-session-status button that opens the same panel in a keyboard-accessible popover.
+session-status button that expands the sidebar and focuses its session panel,
+with mouse and keyboard activation.
 Collapsing the sidebar does not disconnect acquisition or reset history.
 
 Acquisition notices appear as dismissible top-right in-app notifications that
@@ -231,8 +258,8 @@ an existing session; resolve and open a new one.
 For Replay the session panel shows **decoded frames**, not a recording's sample rate or
 Playing/Paused time. For Live it shows status, board/runner, observed samples/s,
 and project/build context. There is no sample-age line.
-There is no Offline mode in the adapter dialog; legacy desktop
-and static-JSON workflows remain separate and unchanged.
+Native and web share the same Rust/GPUI foundation and Python adapter for
+Live acquisition and replay of ZView recordings.
 
 ## Phase 3 — Live monitoring
 
@@ -528,9 +555,8 @@ does not validate physical probe drivers or USB behavior.
   Explicit worker cleanup remains in place alongside `Target.open()`'s merged
   stop-before-disconnect guarantee.
 
-Self-contained recordings and faithful replay timing remain
-later work. The application still supports its pre-existing offline JSON
-workflows; this phase does not remove those supported interfaces.
+Self-contained recordings and faithful replay timing remain later work.
+Native and web share the same Python adapter and Live/Replay controls.
 
 ## HTTP and WebSocket contract
 
@@ -609,8 +635,7 @@ coordinates screen-driven selection. Always update client and adapter together.
 **Migration from protocol 1:** rebuild the WASM client and restart the Python
 server together, then refresh all tabs. Top-level `mode`/`recording` move into
 `source`; stop commands now require the expected session ID. Stale stop/reconnect
-commands return 409 and cannot affect a replacement session. The shared
-native/static JSON document format is unchanged.
+commands return 409 and cannot affect a replacement session.
 
 One Python worker consumes the core queue and forwards to the asyncio loop with
 bounded outstanding delivery. Each browser has a 16-message queue. Slow clients
@@ -648,7 +673,7 @@ cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 cargo +nightly clippy --locked --lib --target wasm32-unknown-unknown -- -D warnings
 python3 scripts/web_ui.py build
-node --test web/documents.test.mjs
+node --test web/startup.test.mjs
 python3 -m unittest discover -s scripts -p test_web_ui.py -v
 .venv-web/bin/python -m pip check
 .venv-web/bin/python -m unittest discover -s web-ui -p 'test_*.py' -v

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Build the shared Rust UI and serve only its static output and selected JSON."""
+"""Build the shared Rust UI and launch its required Python session adapter."""
 import argparse
-import functools
 import hashlib
 import json
 import os
@@ -9,14 +8,10 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
 from urllib.request import urlopen
-import webbrowser
 
 ROOT = Path(__file__).resolve().parents[1]
 SITE = ROOT / "target" / "web"
-LIMIT = 16 * 1024 * 1024
 BINDGEN_VERSION = "0.2.129"  # Must match Cargo.toml and Cargo.lock.
 FONT_BASE = (
     "https://raw.githubusercontent.com/longbridge/gpui-kit/"
@@ -97,7 +92,7 @@ def build(release=False):
     ], check=True)
     if release:
         optimize(SITE / "pkg" / "zview_desktop_bg.wasm")
-    for name in ("index.html", "main.js", "documents.mjs"):
+    for name in ("index.html", "main.js", "startup.mjs"):
         shutil.copyfile(ROOT / "web" / name, SITE / name)
     fonts = SITE / "fonts"
     fonts.mkdir(exist_ok=True)
@@ -111,84 +106,28 @@ def build(release=False):
         if hashlib.sha256(data).hexdigest() != digest:
             raise ValueError(f"Checksum mismatch for {name}")
         path.write_bytes(data)
-    print(f"Static site: {SITE}", flush=True)
+    print(f"Browser site: {SITE}", flush=True)
 
 
-def read_document(path):
-    """Read once, with the same byte bound as the application's native loader."""
-    with Path(path).open("rb") as source:
-        data = source.read(LIMIT + 1)
-    if len(data) > LIMIT:
-        raise ValueError("Dump exceeds the 16 MiB limit.")
-    json.loads(data.decode("utf-8"))
-    return data
-
-
-class Handler(SimpleHTTPRequestHandler):
-    """Never serve the repository root, user file directory, or directory listings."""
-
-    def __init__(self, *args, document=None, name=None, **kwargs):
-        self.document = document
-        self.name = name
-        super().__init__(*args, directory=str(SITE), **kwargs)
-
-    def parse_request(self):
-        if not super().parse_request():
-            return False
-        # Reject foreign Host headers (DNS rebinding) and cross-site fetches.
-        # Check before method dispatch so HEAD cannot bypass the GET boundary.
-        port = self.server.server_port
-        if self.headers.get("Host") not in (f"127.0.0.1:{port}", f"localhost:{port}"):
-            self.send_error(403)
-            return False
-        if self.headers.get("Sec-Fetch-Site") == "cross-site":
-            self.send_error(403)
-            return False
-        return True
-
-    def do_GET(self):
-        path = urlsplit(self.path).path
-        if path == "/session.json":
-            self.send_bytes(json.dumps({"name": self.name}).encode(), "application/json")
-        elif path == "/initial.json" and self.document is not None:
-            self.send_bytes(self.document, "application/json")
-        else:
-            super().do_GET()
-
-    def send_bytes(self, data, content_type):
-        self.send_response(200)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-    def end_headers(self):
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        super().end_headers()
-
-    def list_directory(self, path):
-        self.send_error(404)
-        return None
-
-
-def serve(file="", port=0, open_browser=True, skip_build=False):
-    # Validate before spending time building. The document is never copied to SITE.
-    document = read_document(file) if file else None
+def serve(adapter_args=(), *, python=None, skip_build=False):
+    python = python or os.environ.get("ZVIEW_GUI_PYTHON") or sys.executable
+    # Use the selected installed adapter, not an inferred checkout or PYTHONPATH.
+    # Fail before building if that environment cannot run the required backend.
+    try:
+        subprocess.run([python, "-I", "-c", "import zview_gui, zview"], check=True)
+    except subprocess.CalledProcessError as error:
+        raise ValueError(
+            f"The required Python adapter is not available in {python}. "
+            "Install this checkout's adapter in that environment; see web-ui/README.md."
+        ) from error
     if not skip_build:
         build()
-    if not (SITE / "pkg" / "zview_desktop_bg.wasm").is_file():
-        raise ValueError("No web build found. Run `just web-build` first.")
-    handler = functools.partial(Handler, document=document, name=Path(file).name if file else None)
-    with ThreadingHTTPServer(("127.0.0.1", port), handler) as server:
-        url = f"http://127.0.0.1:{server.server_port}/"
-        print(f"ZView: {url}\nCtrl+C stops the server. JSON stays on this machine.", flush=True)
-        if open_browser:
-            webbrowser.open(url)
-        try:
-            server.serve_forever()
-        except KeyboardInterrupt:
-            pass
+    required = ("index.html", "main.js", "startup.mjs", "pkg/zview_desktop.js",
+                "pkg/zview_desktop_bg.wasm", "fonts/OFL.txt")
+    if any(not (SITE / name).is_file() for name in required):
+        raise ValueError("No complete browser build found. Run `just web-build` first.")
+    subprocess.run([python, "-I", "-m", "zview_gui", *adapter_args, "--site", str(SITE)],
+                   cwd=ROOT, check=True)
 
 
 def main():
@@ -197,16 +136,18 @@ def main():
     build_parser = commands.add_parser("build")
     build_parser.add_argument("--release", action="store_true")
     serve_parser = commands.add_parser("serve")
-    serve_parser.add_argument("file", nargs="?", default="")
-    serve_parser.add_argument("--port", type=int, default=0)
-    serve_parser.add_argument("--no-open", action="store_true")
+    serve_parser.add_argument("--python", help="Interpreter with this checkout's adapter installed.")
     serve_parser.add_argument("--skip-build", action="store_true")
-    args = parser.parse_args()
+    args, adapter_args = parser.parse_known_args()
+    if args.command == "build" and adapter_args:
+        parser.error(f"unrecognized arguments: {' '.join(adapter_args)}")
     try:
         if args.command == "build":
             build(args.release)
         else:
-            serve(args.file, args.port, not args.no_open, args.skip_build)
+            serve(adapter_args, python=args.python, skip_build=args.skip_build)
+    except KeyboardInterrupt:
+        return 0
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         print(f"ZView: {error}", file=sys.stderr)
         return 1

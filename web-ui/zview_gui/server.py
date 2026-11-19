@@ -449,8 +449,12 @@ async def bind(runner, host, port, console):
 
 async def serve(data_root, *, host="127.0.0.1", port=None, period=0.1, heap_period=1.,
                 heap_cooldown=1., live=None, open_browser=False, ready=None, stop=None,
-                console=None, site=None):
-    """Serve until ``stop`` is set (or Ctrl+C), optionally auto-connecting ``live``."""
+                console=None, site=None, announce_browser=True):
+    """Serve until ``stop`` is set (or Ctrl+C), optionally auto-connecting ``live``.
+
+    Native hosts disable ``announce_browser``; readiness and session diagnostics
+    remain independent of the browser startup instructions.
+    """
     console = console if console is not None else Console()
     app = create_app(data_root, period=period, heap_period=heap_period,
                      heap_cooldown=heap_cooldown, site=site)
@@ -479,7 +483,8 @@ async def serve(data_root, *, host="127.0.0.1", port=None, period=0.1, heap_peri
                 # Keep serving: the session dialog can correct the configuration.
                 console.error(f"Live auto-connect failed: {exc}")
                 console.hint("Fix the settings in Configure… in the browser.")
-        console.serving(url)
+        if announce_browser:
+            console.serving(url)
         if open_browser:
             webbrowser.open(url)
         if ready is not None:

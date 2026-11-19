@@ -101,16 +101,25 @@ pub(super) struct Controls {
     action_bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
     panel_bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
     session_toggle_bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
-    pub(super) session_popover_open: bool,
+    pub(super) sidebar_toggle_bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
+    pub(super) backing_bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
+    pub(super) about_bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
+    pub(super) help_bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
     pub(super) session_focus: FocusHandle,
     draft: session_ui::Draft,
     _draft_subscriptions: Vec<Subscription>,
     #[cfg(not(target_family = "wasm"))]
     endpoint: String,
     #[cfg(not(target_family = "wasm"))]
-    connection_task: Option<Task<()>>,
+    pub(super) connection_task: Option<Task<()>>,
     #[cfg(not(target_family = "wasm"))]
-    process: Option<crate::native_adapter::OwnedAdapter>,
+    pub(super) process: Option<crate::native_adapter::OwnedAdapter>,
+    #[cfg(not(target_family = "wasm"))]
+    pub(super) startup: Option<crate::native_adapter::Startup>,
+    #[cfg(not(target_family = "wasm"))]
+    pub(super) closing: bool,
+    #[cfg(not(target_family = "wasm"))]
+    pub(super) shutdown: Option<crate::native_adapter::Shutdown>,
 }
 
 impl Controls {
@@ -138,7 +147,10 @@ impl Controls {
             action_bounds: Default::default(),
             panel_bounds: Default::default(),
             session_toggle_bounds: Default::default(),
-            session_popover_open: false,
+            sidebar_toggle_bounds: Default::default(),
+            backing_bounds: Default::default(),
+            about_bounds: Default::default(),
+            help_bounds: Default::default(),
             session_focus: cx.focus_handle().tab_stop(true),
             draft,
             _draft_subscriptions: subscriptions,
@@ -148,6 +160,12 @@ impl Controls {
             connection_task: None,
             #[cfg(not(target_family = "wasm"))]
             process: None,
+            #[cfg(not(target_family = "wasm"))]
+            startup: None,
+            #[cfg(not(target_family = "wasm"))]
+            closing: false,
+            #[cfg(not(target_family = "wasm"))]
+            shutdown: None,
         }
     }
 }
@@ -618,21 +636,12 @@ impl ThreadsApp {
     }
 }
 
-/// Called once by the existing browser host. Static JSON hosting still works:
-/// no adapter API (404) means no controls and no reconnect loop.
+/// Called once by the browser host. The adapter is required; connection/API
+/// failures remain visible and retry instead of selecting another data source.
 #[cfg(target_family = "wasm")]
 #[wasm_bindgen]
 pub fn connect_adapter() {
     spawn_local(async {
-        match Request::get("/api/session").send().await {
-            Ok(response) if response.status() == 404 => return,
-            Ok(response) if response.ok() => {}
-            _ => return,
-        }
-        let _ = web::update_view(|this, _, cx| {
-            this.adapter.available = true;
-            cx.notify();
-        });
         // Freshness changes even when neither frames nor health events arrive.
         // This is one UI-only timer, never another acquisition loop.
         spawn_local(async {
@@ -666,6 +675,29 @@ pub fn connect_adapter() {
             location.host().unwrap_or_default()
         );
         loop {
+            let failure = match Request::get("/api/session").send().await {
+                Ok(response) if response.ok() => None,
+                Ok(response) => Some(format!(
+                    "The required ZView adapter is unavailable (HTTP {}). Start it with just web-gui or zview-gui. Retrying…",
+                    response.status()
+                )),
+                Err(error) => Some(format!(
+                    "Cannot reach the required ZView adapter: {error}. Retrying…"
+                )),
+            };
+            if let Some(error) = failure {
+                if web::update_view(|this, _, cx| {
+                    this.adapter.state.connection = Connection::Retrying;
+                    this.error = Some(error);
+                    cx.notify();
+                })
+                .is_err()
+                {
+                    break;
+                }
+                adapter_delay(1500).await;
+                continue;
+            }
             let client_id = browser_client_id();
             let _ = web::update_view(|this, _, _| {
                 this.adapter.client_id = Some(client_id.clone());
@@ -706,6 +738,9 @@ pub fn connect_adapter() {
                 this.adapter.client_id = None;
                 this.adapter.view_interest.reset();
                 this.live_history.interrupt();
+                this.error.get_or_insert_with(|| {
+                    "The required ZView adapter disconnected. Retrying…".into()
+                });
                 cx.notify();
             });
             adapter_delay(1500).await;
@@ -797,9 +832,14 @@ pub fn adapter_state() -> Result<String, JsValue> {
             "draft_recording": adapter.draft.recording_path(cx),
             "native_picker": adapter.draft.picker,
         });
-        state["session_popover_open"] = json!(adapter.session_popover_open);
         state["sidebar_width"] = json!(this.sidebar_width().as_f32());
-        state["session_toggle_focused"] = json!(adapter.session_focus.is_focused(window));
+        state["navigation_width"] = json!(this.navigation_width().as_f32());
+        state["modal_open"] = json!(window.has_active_dialog(cx));
+        state["backing_focused"] = json!(this.backing_focus.is_focused(window));
+        state["session_toggle_focused"] =
+            json!(this.collapsed && adapter.session_focus.is_focused(window));
+        state["session_panel_focused"] =
+            json!(!this.collapsed && adapter.session_focus.is_focused(window));
         state["status_shimmer"] = json!(
             adapter
                 .state
@@ -817,6 +857,10 @@ pub fn adapter_state() -> Result<String, JsValue> {
             ("session_panel_bounds", adapter.panel_bounds.get()),
             ("session_toggle_bounds", adapter.session_toggle_bounds.get()),
             ("session_mode_bounds", adapter.draft.mode_bounds.get()),
+            ("sidebar_toggle_bounds", adapter.sidebar_toggle_bounds.get()),
+            ("backing_bounds", adapter.backing_bounds.get()),
+            ("about_bounds", adapter.about_bounds.get()),
+            ("help_bounds", adapter.help_bounds.get()),
         ] {
             state[name] = json!({
                 "x": bounds.left().as_f32(), "y": bounds.top().as_f32(),
