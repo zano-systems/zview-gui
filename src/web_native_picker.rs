@@ -11,6 +11,7 @@ impl Draft {
         }
     }
 
+    #[cfg(target_family = "wasm")]
     pub(in crate::web_adapter) fn recording_path(&self, cx: &App) -> String {
         Self::value(&self.recording, cx)
     }
@@ -74,9 +75,10 @@ impl ThreadsApp {
         self.adapter.draft.picker = Some(kind);
         self.adapter.draft.error = None;
         cx.notify();
-        spawn_local(async move {
+        let url = self.adapter_url("/api/files/choose");
+        spawn_session_task(cx, async move |mut host| {
             let result = async {
-                let response = Request::post("/api/files/choose")
+                let response = Request::post(&url)
                     .json(&json!({"kind": kind, "current": current}))
                     .map_err(|e| e.to_string())?
                     .send()
@@ -98,7 +100,7 @@ impl ThreadsApp {
                     .map_err(|e| e.to_string())
             }
             .await;
-            let _ = web::update_view(|app, window, cx| {
+            let _ = host.update(|app, window, cx| {
                 if app.adapter.draft.picker_revision != revision || !app.adapter.draft.open {
                     return;
                 }

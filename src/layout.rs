@@ -20,7 +20,6 @@ pub(super) fn info(
 }
 
 /// A discovery tag uses the same hover/focus explanation as an info control.
-#[cfg(any(test, target_family = "wasm"))]
 pub(super) fn info_tag(
     id: String,
     name: String,

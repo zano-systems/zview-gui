@@ -1,28 +1,90 @@
-//! HTTP/WebSocket client for the existing GPUI browser host, not a second UI.
+//! Shared adapter session state and controls, with platform-specific transports.
 use super::*;
 use crate::adapter_protocol::{
     ClientState, Connection, Envelope, Event, LiveView, Mode, Status, ViewInterest,
 };
+#[cfg(not(target_family = "wasm"))]
+use crate::native_adapter::Request;
+#[cfg(target_family = "wasm")]
 use futures_util::StreamExt;
+#[cfg(target_family = "wasm")]
 use gloo_net::{
     http::Request,
     websocket::{Message, futures::WebSocket},
 };
-use gloo_timers::future::TimeoutFuture;
 use serde_json::json;
+#[cfg(target_family = "wasm")]
 use wasm_bindgen::prelude::*;
+#[cfg(target_family = "wasm")]
 use wasm_bindgen_futures::spawn_local;
 
+#[cfg(target_family = "wasm")]
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = ["globalThis", "crypto"], js_name = randomUUID)]
     fn browser_client_id() -> String;
 }
 
+#[cfg(not(target_family = "wasm"))]
+#[path = "native_session.rs"]
+mod native;
 #[path = "web_session.rs"]
 mod session_ui;
+#[cfg(all(test, not(target_family = "wasm")))]
+#[path = "adapter_ui_tests.rs"]
+mod tests;
 #[path = "web_usage.rs"]
 mod usage_ui;
+
+async fn adapter_delay(milliseconds: u64) {
+    #[cfg(target_family = "wasm")]
+    gloo_timers::future::TimeoutFuture::new(milliseconds as u32).await;
+    #[cfg(not(target_family = "wasm"))]
+    smol::Timer::after(std::time::Duration::from_millis(milliseconds)).await;
+}
+
+/// Browser callbacks retain their existing JS scheduling and host access.
+/// Native tasks instead carry a weak view and GPUI's async application context.
+struct SessionTask {
+    #[cfg(not(target_family = "wasm"))]
+    view: WeakEntity<ThreadsApp>,
+    #[cfg(not(target_family = "wasm"))]
+    app: AsyncApp,
+}
+
+impl SessionTask {
+    fn update(
+        &mut self,
+        update: impl FnOnce(&mut ThreadsApp, &mut Window, &mut Context<ThreadsApp>),
+    ) -> Result<(), String> {
+        #[cfg(target_family = "wasm")]
+        return web::update_view(update).map_err(|e| format!("{e:?}"));
+        #[cfg(not(target_family = "wasm"))]
+        self.view
+            .update_in(&mut self.app, update)
+            .map_err(|e| e.to_string())
+    }
+}
+
+fn spawn_session_task<F: std::future::Future<Output = ()> + 'static>(
+    cx: &mut Context<ThreadsApp>,
+    task: impl FnOnce(SessionTask) -> F + 'static,
+) {
+    #[cfg(target_family = "wasm")]
+    {
+        let _ = cx;
+        spawn_local(task(SessionTask {}));
+    }
+    #[cfg(not(target_family = "wasm"))]
+    cx.spawn(async move |view, cx| {
+        task(SessionTask {
+            view,
+            app: cx.clone(),
+        })
+        .await;
+    })
+    .detach();
+}
 
 struct AcquisitionWarningNotification;
 
@@ -43,6 +105,12 @@ pub(super) struct Controls {
     pub(super) session_focus: FocusHandle,
     draft: session_ui::Draft,
     _draft_subscriptions: Vec<Subscription>,
+    #[cfg(not(target_family = "wasm"))]
+    endpoint: String,
+    #[cfg(not(target_family = "wasm"))]
+    connection_task: Option<Task<()>>,
+    #[cfg(not(target_family = "wasm"))]
+    process: Option<crate::native_adapter::OwnedAdapter>,
 }
 
 impl Controls {
@@ -74,6 +142,12 @@ impl Controls {
             session_focus: cx.focus_handle().tab_stop(true),
             draft,
             _draft_subscriptions: subscriptions,
+            #[cfg(not(target_family = "wasm"))]
+            endpoint: String::new(),
+            #[cfg(not(target_family = "wasm"))]
+            connection_task: None,
+            #[cfg(not(target_family = "wasm"))]
+            process: None,
         }
     }
 }
@@ -97,6 +171,13 @@ impl Controls {
 }
 
 impl ThreadsApp {
+    fn adapter_url(&self, path: &str) -> String {
+        #[cfg(target_family = "wasm")]
+        return path.to_owned();
+        #[cfg(not(target_family = "wasm"))]
+        format!("{}{path}", self.adapter.endpoint)
+    }
+
     fn set_usage_window(&mut self, polls: u32, cx: &mut Context<Self>) {
         if let (Some(session), Some(client_id)) =
             (&self.adapter.state.session, &self.adapter.client_id)
@@ -227,10 +308,11 @@ impl ThreadsApp {
             return;
         };
         let session_id = session.id.clone();
-        spawn_local(async move {
+        let url = self.adapter_url("/api/session/view");
+        spawn_session_task(cx, async move |mut host| {
             let result =
                 async {
-                    let response = Request::post("/api/session/view")
+                    let response = Request::post(&url)
                     .json(&json!({"session_id": session_id, "client_id": client_id, "view": view}))
                     .map_err(|e| e.to_string())?.send().await.map_err(|e| e.to_string())?;
                     if response.ok() {
@@ -245,7 +327,7 @@ impl ThreadsApp {
                     Ok((Some(error), conflict))
                 }
                 .await;
-            let _ = web::update_view(|this, _, cx| {
+            let _ = host.update(|this, _, cx| {
                 let (error, conflict) = result.unwrap_or_else(|e| (Some(e), false));
                 this.adapter.view_interest.finish(epoch, error, conflict);
                 cx.notify();
@@ -361,9 +443,10 @@ impl ThreadsApp {
         self.adapter.state.pending = true;
         self.error = None;
         cx.notify();
-        spawn_local(async move {
+        let url = self.adapter_url(path);
+        spawn_session_task(cx, async move |mut host| {
             let result = async {
-                let response = Request::post(path)
+                let response = Request::post(&url)
                     .json(&body)
                     .map_err(|error| error.to_string())?
                     .send()
@@ -379,7 +462,7 @@ impl ThreadsApp {
                     .unwrap_or(text))
             }
             .await;
-            let _ = web::update_view(|this, window, cx| {
+            let _ = host.update(|this, window, cx| {
                 this.adapter.state.pending = false;
                 if let Err(error) = result {
                     this.adapter.draft.error = Some(error.clone());
@@ -537,6 +620,7 @@ impl ThreadsApp {
 
 /// Called once by the existing browser host. Static JSON hosting still works:
 /// no adapter API (404) means no controls and no reconnect loop.
+#[cfg(target_family = "wasm")]
 #[wasm_bindgen]
 pub fn connect_adapter() {
     spawn_local(async {
@@ -553,7 +637,7 @@ pub fn connect_adapter() {
         // This is one UI-only timer, never another acquisition loop.
         spawn_local(async {
             loop {
-                TimeoutFuture::new(1000).await;
+                adapter_delay(1000).await;
                 if web::update_view(|this, _, cx| {
                     if this
                         .adapter
@@ -624,12 +708,13 @@ pub fn connect_adapter() {
                 this.live_history.interrupt();
                 cx.notify();
             });
-            TimeoutFuture::new(1500).await;
+            adapter_delay(1500).await;
         }
     });
 }
 
 /// Use the same Rust command path as the GPUI controls; useful to browser hosts.
+#[cfg(target_family = "wasm")]
 #[wasm_bindgen]
 pub fn adapter_open_replay(recording: &str, elf: &str) -> Result<(), JsValue> {
     web::update_view(|this, _, cx| {
@@ -645,11 +730,13 @@ pub fn adapter_open_replay(recording: &str, elf: &str) -> Result<(), JsValue> {
     })
 }
 
+#[cfg(target_family = "wasm")]
 #[wasm_bindgen]
 pub fn adapter_stop() -> Result<(), JsValue> {
     web::update_view(|this, _, cx| this.stop_adapter(cx))
 }
 
+#[cfg(target_family = "wasm")]
 #[wasm_bindgen]
 pub fn adapter_reconnect() -> Result<(), JsValue> {
     web::update_view(|this, _, cx| this.reconnect_adapter(cx))
@@ -657,6 +744,7 @@ pub fn adapter_reconnect() -> Result<(), JsValue> {
 
 /// Read-only inspection of Rust state, including measurements in the shared UI.
 /// Canvas rendering has no DOM table for browser tests to inspect.
+#[cfg(target_family = "wasm")]
 #[wasm_bindgen]
 pub fn adapter_state() -> Result<String, JsValue> {
     let mut state = serde_json::Value::Null;

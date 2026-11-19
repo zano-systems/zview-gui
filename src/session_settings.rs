@@ -1,9 +1,8 @@
-//! Value rules shared by the browser form and native regression tests.
+//! Value rules shared by the native and browser session forms.
 use crate::adapter_protocol::{BuildContext, LiveConfiguration, Mode};
 use serde_json::{Value, json};
 
 /// Only associate connected-firmware discovery with the same effective settings.
-#[cfg(any(test, target_family = "wasm"))]
 pub(crate) fn matches_discovery(
     request: &Value,
     context: &BuildContext,
@@ -19,7 +18,6 @@ pub(crate) fn matches_discovery(
 
 /// Capabilities list available groups, not the groups selected for polling.
 /// Keep known absent groups visible and preserve future backend group names.
-#[cfg(any(test, target_family = "wasm"))]
 pub(crate) fn discovery_groups(
     capabilities: &crate::adapter_protocol::Capabilities,
 ) -> Vec<(String, bool)> {
@@ -39,7 +37,6 @@ pub(crate) fn discovery_groups(
         .collect()
 }
 
-#[cfg(any(test, target_family = "wasm"))]
 pub(crate) fn discovery_name(group: &str) -> String {
     match group {
         "threads" => "Threads",
@@ -55,7 +52,6 @@ pub(crate) fn discovery_name(group: &str) -> String {
 }
 
 /// Keep tooltips bounded; absence of inventory is not an empty group.
-#[cfg(any(test, target_family = "wasm"))]
 pub(crate) fn discovery_tooltip(
     name: &str,
     available: bool,

@@ -16,14 +16,8 @@ use gpui_kit::*;
 
 impl ThreadsApp {
     pub(super) fn kernel_objects(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        #[cfg(target_family = "wasm")]
         let loading = self.live_view_loading(cx);
-        #[cfg(not(target_family = "wasm"))]
-        let loading = false;
-        #[cfg(target_family = "wasm")]
         let loading_note = self.live_view_loading_note();
-        #[cfg(not(target_family = "wasm"))]
-        let loading_note = String::new();
         let rows = if loading {
             Vec::new()
         } else {

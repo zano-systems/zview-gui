@@ -12,6 +12,10 @@ web-ui file="test-data/zview-bench-60s/session-with-heap-maps.json":
 web-build:
     python3 scripts/web_ui.py build --release
 
+# Build and pip-install a packaged development version into a virtual environment.
+web-install-dev python="python3":
+    "{{python}}" scripts/install_dev.py
+
 # Install the browser build tools; wasm-bindgen stays inside target/tools.
 web-setup:
     rustup toolchain install nightly --profile minimal --target wasm32-unknown-unknown

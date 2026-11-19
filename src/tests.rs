@@ -1507,7 +1507,7 @@ fn mutex_detail_navigation_history_and_partial_data(cx: &mut TestAppContext) {
     app.read_with(&cx, |app, _| assert_eq!(app.screen, Screen::KernelObjects));
 }
 
-fn setup(cx: &mut TestAppContext) -> (Entity<ThreadsApp>, VisualTestContext) {
+pub(super) fn setup(cx: &mut TestAppContext) -> (Entity<ThreadsApp>, VisualTestContext) {
     cx.update(|cx| {
         init(cx);
         bind_keys(cx);

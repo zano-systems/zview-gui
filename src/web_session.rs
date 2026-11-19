@@ -1030,9 +1030,9 @@ impl ThreadsApp {
         let generation = draft.generation;
         let revision = draft.resolution_revision;
         draft.resolving = true;
-        spawn_local(async move {
-            TimeoutFuture::new(250).await;
-            let _ = web::update_view(|app, _, cx| {
+        spawn_session_task(cx, async move |mut host| {
+            adapter_delay(250).await;
+            let _ = host.update(|app, _, cx| {
                 let draft = &app.adapter.draft;
                 if draft.open
                     && draft.generation == generation
@@ -1063,9 +1063,10 @@ impl ThreadsApp {
         self.adapter.draft.resolving = true;
         self.adapter.draft.error = None;
         cx.notify();
-        spawn_local(async move {
+        let url = self.adapter_url("/api/build/resolve");
+        spawn_session_task(cx, async move |mut host| {
             let result = async {
-                let response = Request::post("/api/build/resolve")
+                let response = Request::post(&url)
                     .json(&request)
                     .map_err(|e| e.to_string())?
                     .send()
@@ -1087,7 +1088,7 @@ impl ThreadsApp {
                     .map_err(|e| e.to_string())
             }
             .await;
-            let _ = web::update_view(|app, window, cx| {
+            let _ = host.update(|app, window, cx| {
                 if !app.adapter.draft.open
                     || app.adapter.draft.generation != generation
                     || app.adapter.draft.resolution_revision != revision
@@ -1125,6 +1126,7 @@ impl ThreadsApp {
 }
 
 /// Opens the same GPUI dialog as the header control, including its draft reset.
+#[cfg(target_family = "wasm")]
 #[wasm_bindgen]
 pub fn adapter_configure() -> Result<(), JsValue> {
     web::update_view(|app, window, cx| app.open_session_dialog(window, cx))

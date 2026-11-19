@@ -126,7 +126,8 @@ pub(crate) fn guide(browser: bool) -> Vec<(&'static str, Vec<&'static str>)> {
         ]
     } else {
         vec![
-            "Open dump loads zview dump --json output. Open recording asks for a .ndjson.gz recording and its matching ELF; Python with ZView dependencies is required (ZVIEW_PYTHON).",
+            "Native sessions use the same Python adapter and sidebar Configure session controls as the browser for Live and Replay. Select the adapter environment with --python or ZVIEW_GUI_PYTHON; Replay needs a matching ELF or build.",
+            "In standalone offline mode (a JSON argument or --offline), Open dump loads zview dump --json output. Open recording asks for a .ndjson.gz recording and its matching ELF; Python with ZView dependencies is required (ZVIEW_PYTHON).",
             "Reload repeats the import. Cancel or a failed import leaves the current session intact. Arrays enable frame navigation and charts.",
         ]
     };

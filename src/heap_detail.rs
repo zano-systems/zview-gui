@@ -70,22 +70,15 @@ impl ThreadsApp {
         let series = series.with_playhead(self.playback_time(cx));
         let caption = series.caption.clone();
         let chunks = heap.and_then(|h| h.chunks.as_deref());
-        #[cfg(target_family = "wasm")]
         let chunks = self
             .live_heap_map(key)
             .map(|map| map.chunks.as_slice())
             .or(chunks);
-        #[cfg(target_family = "wasm")]
         let map_frame = self
             .live_heap_map(key)
             .map(|map| map.frame_number as usize)
             .unwrap_or(self.frame);
-        #[cfg(not(target_family = "wasm"))]
-        let map_frame = self.frame;
-        #[cfg(target_family = "wasm")]
         let map_note = self.live_heap_note(key);
-        #[cfg(not(target_family = "wasm"))]
-        let map_note = None::<String>;
         let fragmentation = chunks
             .and_then(ChunkMap::new)
             .map(|map| map.fragmentation());

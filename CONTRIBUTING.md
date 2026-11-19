@@ -48,6 +48,30 @@ To build a wheel locally, build the site first (`just web-build`), then run
 `python -m build --wheel` and `python3 scripts/check_wheel.py contents dist/*.whl`.
 A wheel build fails if the site in `target/web` is incomplete.
 
+For a local packaged development install, run
+`just web-install-dev .venv-web/bin/python` after `just web-setup`.
+It builds the optimized site and installs a regular wheel with version
+`<release version>.dev0` into the selected virtual environment. Only a temporary
+packaging tree receives that version; release files and publishing are unchanged.
+Use a dedicated environment: repeated runs replace the development package and
+reinstall its dependencies. See the main README for setup and launch commands.
+
+Native adapter integration can be checked without hardware or a browser build.
+Install this checkout's adapter in the separate Python 3.12 environment described
+in `web-ui/README.md`, then run:
+
+```sh
+ZVIEW_GUI_PYTHON="$PWD/.venv-web/bin/python" cargo test --locked --lib \
+  native_transport_replays_through_owned_python_adapter -- --ignored
+```
+
+This exercises owned-process readiness, the native HTTP/WebSocket transport,
+real recording replay and reconnect snapshot recovery. The normal Python suite
+also checks parent-EOF shutdown; Rust UI tests cover shared native session
+controls. These do not replace native/browser visual checks or Live hardware
+validation. Do not point `ZVIEW_PYTHON` at this adapter environment: the legacy
+recording exporter has a different backend contract.
+
 ## Commits
 
 Use [Conventional Commits](https://www.conventionalcommits.org/):
