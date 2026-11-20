@@ -9,18 +9,17 @@ the required adapter. Rust owns all session state.
 The adapter uses `Target.open()`, `Core`, and `serialize_frame()` directly. It
 does not drive the TUI or implement another ELF/memory-read decoder.
 
-This branch is based on remote `main` at
-`803bff9cea26a5739f39c8d424c1d8a36baf90ef`, which already included the shared
-browser frontend. The Python package is pinned to the ZView 0.28.1 release on
-PyPI (`zview==0.28.1`, tag `v0.28.1`, upstream PR #110's merged commit
-`cfc6d6d383ff4fbe04ec35f7a8d84ed99d5b71ac`).
-
 ## Run
 
 The adapter is the `zview_gui` package in this directory, published with the
 prebuilt site as [`zview-gui` on PyPI](https://pypi.org/project/zview-gui/).
-To work on it, use the repository's WASM setup/build plus a separate Python
-3.12 environment with an editable install. From the repository root:
+To run the released browser UI without building from source, follow the
+[Quick start](../README.md#quick-start).
+
+### Develop from a checkout
+
+For browser development, build the WASM site and install the adapter in
+editable mode in a separate Python 3.12 environment. From the repository root:
 
 ```sh
 just web-setup
@@ -31,26 +30,17 @@ python3.12 -m venv .venv-web
 .venv-web/bin/zview-gui --no-open      # or: .venv-web/bin/python -m zview_gui
 ```
 
-The native Rust application also uses this adapter and the shared session
-controls. After the editable install above, run
-`cargo run -- --python .venv-web/bin/python` from the repository root.
-Add `--data-root /path/to/workspace --build-dir build` to start Live after
-the native-owned adapter connects. `-d` is an alias for `--build-dir`; paths
-remain constrained by the adapter's data root. Without a build argument,
-choose Live or Replay through Configure session.
-Unlike browser serving, native does not require the WASM tools or a built site.
-Its internal `zview_gui.native_host` process starts the existing server on a
-free loopback port, reports readiness to the parent, and shuts down on parent
-stdin closure. Browser CLI and west launch behavior are unchanged. See the main
-README's [native workflow](../README.md#native-live-and-replay) for adapter
-attachment, interpreter selection and data-root options.
-
 An editable install serves the checkout's `target/web`; an installed wheel
 serves the site packaged in it, and `--site DIR` serves any other build. Without
-`-d`, the command serves Replay from `--data-root` (default: the current
-directory). `-d BUILD_DIR` connects Live at startup, with
-`-e/-r/-t/--domain/--frequency` overrides; `--port 0` picks a free port, and
-`--no-open` keeps the browser closed.
+`-d`, the command starts without connecting to a target and reads files under
+`--data-root` (default: the current directory). `-d BUILD_DIR` connects Live at
+startup, with `-e/-r/-t/--domain/--frequency` overrides; `--port 0` picks a free
+port, and `--no-open` keeps the browser closed.
+
+The [native development workflow](../README.md#native-live-and-replay) uses
+the same adapter but does not require a WASM build. Its `zview_gui.native_host`
+process starts the server on a free loopback port, reports readiness to the
+parent, and shuts down on parent stdin closure.
 
 As in native, a relative `--build-dir` is resolved under an explicit
 `--data-root`, or under the current directory when no data root is supplied:
