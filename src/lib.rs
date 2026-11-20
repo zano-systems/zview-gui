@@ -251,7 +251,10 @@ impl ThreadsApp {
         let mut app = Self::adapter_session(window, cx);
         match options {
             Ok(options) => app.start_native_adapter(options, cx),
-            Err(error) => app.error = Some(error),
+            Err(error) => {
+                app.adapter.state.connection = adapter_protocol::Connection::Failed;
+                app.error = Some(error);
+            }
         }
         app
     }

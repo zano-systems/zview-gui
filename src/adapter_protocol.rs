@@ -575,6 +575,7 @@ pub enum Connection {
     Connecting,
     Connected,
     Retrying,
+    Failed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -627,6 +628,7 @@ impl Connection {
             Self::Connecting => "Connecting to adapter…",
             Self::Connected => "Adapter connected",
             Self::Retrying => "Adapter disconnected · retrying…",
+            Self::Failed => "Adapter unavailable",
         }
     }
 }
@@ -649,6 +651,9 @@ impl ClientState {
     pub fn indicator(&self, fresh_frame: bool) -> SessionIndicator {
         if self.connection == Connection::Connecting {
             return SessionIndicator::Busy;
+        }
+        if self.connection == Connection::Failed {
+            return SessionIndicator::Failed;
         }
         if self.connection != Connection::Connected {
             return SessionIndicator::Idle;

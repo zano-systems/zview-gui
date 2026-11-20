@@ -63,6 +63,7 @@ impl ThreadsApp {
                 }
                 Err(error) => {
                     let _ = this.update(cx, |app, cx| {
+                        app.adapter.state.connection = Connection::Failed;
                         app.error = Some(error);
                         cx.notify();
                     });
@@ -132,11 +133,15 @@ impl ThreadsApp {
                     Err(error) => failure = Some(error),
                 }
                 let exited = this.update(cx, |app, cx| {
-                    app.adapter.state.connection = Connection::Retrying;
                     app.adapter.client_id = None;
                     app.adapter.view_interest.reset();
                     app.live_history.interrupt();
                     let exited = app.adapter.process.as_mut().is_some_and(|p| p.exited());
+                    app.adapter.state.connection = if exited {
+                        Connection::Failed
+                    } else {
+                        Connection::Retrying
+                    };
                     app.error = Some(if exited {
                         "The Python adapter exited. Check terminal diagnostics and restart the native app.".into()
                     } else {
@@ -157,8 +162,41 @@ impl ThreadsApp {
 #[cfg(test)]
 mod tests {
     use super::take_live_start;
-    use crate::adapter_protocol::{ClientState, Connection};
+    use crate::adapter_protocol::{ClientState, Connection, SessionIndicator};
+    use gpui::TestAppContext;
     use serde_json::json;
+    use std::time::{Duration, Instant};
+
+    #[gpui_kit::test]
+    fn missing_python_launch_leaves_session_in_non_busy_failure(cx: &mut TestAppContext) {
+        let (app, mut cx) = crate::tests::setup(cx);
+        let python =
+            std::env::temp_dir().join(format!("missing-zview-python-{}", uuid::Uuid::new_v4()));
+        let options = crate::native_adapter::Options::parse(
+            ["--python".into(), python.into_os_string()].into_iter(),
+        )
+        .unwrap();
+        cx.update(|_, cx| app.update(cx, |app, cx| app.start_native_adapter(options, cx)));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            cx.run_until_parked();
+            if app.read_with(&cx, |app, _| app.error.is_some()) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "startup failure did not reach the UI"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        app.read_with(&cx, |app, _| {
+            let error = app.error.as_deref().unwrap();
+            assert!(error.contains("Cannot start") && error.contains("missing-zview-python-"));
+            assert!(error.contains("ZVIEW_GUI_PYTHON"));
+            assert_eq!(app.adapter.state.connection, Connection::Failed);
+            assert_eq!(app.adapter.state.indicator(false), SessionIndicator::Failed);
+        });
+    }
 
     #[test]
     fn cli_live_start_waits_for_snapshot_and_is_not_repeated_after_reconnect() {

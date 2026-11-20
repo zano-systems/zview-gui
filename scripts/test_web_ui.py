@@ -4,9 +4,18 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from zipfile import ZipFile
 
 import web_ui
+from check_wheel import check_contents
 from web_ui import ROOT
+
+
+SITE_ASSETS = (
+    "index.html", "main.js", "startup.mjs", "pkg/zview_desktop.js",
+    "pkg/zview_desktop_bg.wasm", "fonts/OFL.txt",
+    "fonts/IBMPlexSans-Regular.source.ttf", "fonts/JetBrainsMono-Regular.source.ttf",
+)
 
 
 def setUpModule():
@@ -18,8 +27,7 @@ class AdapterLauncherTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory(dir=ROOT / "target")
         self.addCleanup(self.directory.cleanup)
         self.site = Path(self.directory.name)
-        for name in ("index.html", "main.js", "startup.mjs", "pkg/zview_desktop.js",
-                     "pkg/zview_desktop_bg.wasm", "fonts/OFL.txt"):
+        for name in SITE_ASSETS:
             path = self.site / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"build output")
@@ -49,6 +57,19 @@ class AdapterLauncherTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "complete browser build"):
                 web_ui.serve(skip_build=True)
 
+    def test_missing_either_font_stops_before_serving(self):
+        for font in SITE_ASSETS[-2:]:
+            with self.subTest(font=font), patch.object(web_ui.subprocess, "run") as run:
+                path = self.site / font
+                path.unlink()
+                try:
+                    with self.assertRaises(ValueError) as error:
+                        web_ui.serve(skip_build=True)
+                    self.assertIn(font, str(error.exception))
+                    self.assertEqual(run.call_count, 1)  # Only the interpreter probe.
+                finally:
+                    path.write_bytes(b"font")
+
     def test_missing_adapter_fails_before_build_without_static_fallback(self):
         import subprocess
         with patch.object(web_ui, "build") as build, patch.object(
@@ -66,6 +87,29 @@ class AdapterLauncherTests(unittest.TestCase):
             self.assertEqual(web_ui.main(), 0)
         serve.assert_called_once_with(["--port", "0", "--no-open"],
                                       python="env/bin/python", skip_build=True)
+
+
+class WheelTests(unittest.TestCase):
+    def test_content_check_rejects_wheel_missing_either_font(self):
+        with tempfile.TemporaryDirectory() as directory:
+            wheel = Path(directory) / "zview_gui-0.0.0-py3-none-any.whl"
+            for omitted in (*SITE_ASSETS[-2:], None):
+                with self.subTest(omitted=omitted), ZipFile(wheel, "w") as archive:
+                    for name in SITE_ASSETS:
+                        if name != omitted:
+                            archive.writestr(f"zview_gui/site/{name}", "asset")
+                    archive.writestr("zview_gui-0.0.0.dist-info/METADATA",
+                                     "Version: 0.0.0\nRequires-Dist: zview==1.0.0\n")
+                    archive.writestr("zview_gui-0.0.0.dist-info/entry_points.txt",
+                                     "[console_scripts]\nzview-gui = zview_gui.cli:main\n")
+                with self.subTest(omitted=omitted):
+                    if omitted:
+                        with self.assertRaises(SystemExit) as error:
+                            check_contents(wheel)
+                        self.assertIn(f"missing zview_gui/site/{omitted}", str(error.exception))
+                    else:
+                        with patch("builtins.print"):
+                            check_contents(wheel)
 
 
 class WasmOptTests(unittest.TestCase):

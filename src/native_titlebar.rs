@@ -332,6 +332,7 @@ mod tests {
         app.read_with(&cx, |app, _| {
             assert!(app.adapter.available);
             assert_eq!(app.error.as_deref(), Some("Python adapter is required"));
+            assert_eq!(app.adapter.state.connection.label(), "Adapter unavailable");
             assert!(app.frames.iter().all(|frame| frame.threads.is_empty()));
             assert!(app.source.is_none());
         });
