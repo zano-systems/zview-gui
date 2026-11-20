@@ -419,18 +419,86 @@ mod tests {
             .unwrap()
     }
 
-    #[test]
     #[cfg(unix)]
-    fn owned_adapter_drop_waits_for_eof_cleanup() {
-        let mut child = test_child("cat >/dev/null; printf cleaned");
-        let mut stdout = child.stdout.take().unwrap();
-        drop(OwnedAdapter {
+    fn assert_drop_waits_for_cleanup(
+        make_guard: impl FnOnce(OwnedAdapter) -> (Box<dyn Send>, Option<mpsc::Sender<()>>),
+    ) {
+        let gate = std::env::temp_dir().join(format!("zview-cleanup-{}", uuid::Uuid::new_v4()));
+        let mut child = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "cat >/dev/null; echo closing; \
+                 i=0; while [ ! -f \"$1\" ]; do \
+                   [ \"$i\" -lt 250 ] || exit 1; i=$((i + 1)); sleep 0.02; \
+                 done; echo cleaned > \"$1\"",
+                "cleanup",
+            ])
+            .arg(&gate)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let (guard, release_startup) = make_guard(OwnedAdapter {
             child: Some(child),
             endpoint: String::new(),
         });
-        let mut result = String::new();
-        stdout.read_to_string(&mut result).unwrap();
-        assert_eq!(result, "cleaned");
+        let (closing_tx, closing) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut line = String::new();
+            let _ = BufReader::new(stdout).read_line(&mut line);
+            let _ = closing_tx.send(line);
+        });
+        let (dropping_tx, dropping) = mpsc::channel();
+        let (dropped_tx, dropped) = mpsc::channel();
+        let worker_gate = gate.clone();
+        std::thread::spawn(move || {
+            let _ = dropping_tx.send(());
+            drop(guard);
+            // Snapshot cleanup at Drop's return, not after waiting for stdout.
+            let cleaned =
+                std::fs::read_to_string(worker_gate).is_ok_and(|text| text == "cleaned\n");
+            let _ = dropped_tx.send(cleaned);
+        });
+        dropping.recv_timeout(Duration::from_secs(2)).unwrap();
+        let before_startup = release_startup.map(|release| {
+            let result = dropped.recv_timeout(Duration::from_millis(150));
+            release.send(()).unwrap();
+            result
+        });
+        let closing = closing.recv_timeout(Duration::from_secs(2));
+        let early = dropped.recv_timeout(Duration::from_millis(150));
+        std::fs::write(&gate, "").unwrap();
+        let result = if early == Err(mpsc::RecvTimeoutError::Timeout) {
+            dropped.recv_timeout(Duration::from_secs(6))
+        } else {
+            early
+        };
+        let _ = std::fs::remove_file(gate);
+        if let Some(result) = before_startup {
+            assert_eq!(
+                result,
+                Err(mpsc::RecvTimeoutError::Timeout),
+                "Drop returned while startup was still pending"
+            );
+        }
+        assert_eq!(closing.as_deref(), Ok("closing\n"), "child never got EOF");
+        assert_eq!(
+            early,
+            Err(mpsc::RecvTimeoutError::Timeout),
+            "Drop returned before cleanup was released"
+        );
+        assert_eq!(
+            result,
+            Ok(true),
+            "Drop returned before the child completed cleanup"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn owned_adapter_drop_waits_for_eof_cleanup() {
+        assert_drop_waits_for_cleanup(|process| (Box::new(process), None));
     }
 
     #[test]
@@ -448,42 +516,24 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn closing_during_startup_waits_and_cleans_up_the_result() {
-        let mut child = test_child("cat >/dev/null; printf cleaned");
-        let mut stdout = child.stdout.take().unwrap();
-        let startup = Startup(Some(std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(50));
-            Ok((
-                String::new(),
-                Some(OwnedAdapter {
-                    child: Some(child),
-                    endpoint: String::new(),
-                }),
-            ))
-        })));
-        drop(startup);
-        let mut result = String::new();
-        stdout.read_to_string(&mut result).unwrap();
-        assert_eq!(result, "cleaned");
+        assert_drop_waits_for_cleanup(|process| {
+            let (release, pending) = mpsc::channel();
+            let startup = Startup(Some(std::thread::spawn(move || {
+                pending.recv_timeout(Duration::from_secs(3)).unwrap();
+                Ok((String::new(), Some(process)))
+            })));
+            (Box::new(startup), Some(release))
+        });
     }
 
     #[test]
     #[cfg(unix)]
     fn system_quit_during_window_cleanup_joins_the_same_worker() {
-        let mut child = test_child("cat >/dev/null; printf cleaned");
-        let mut stdout = child.stdout.take().unwrap();
-        let worker = Shutdown::new(
-            None,
-            Some(OwnedAdapter {
-                child: Some(child),
-                endpoint: String::new(),
-            }),
-        );
         // The quit hook drops this guard even if window Close already took
         // the owned process out of the UI's process slot.
-        drop(worker);
-        let mut result = String::new();
-        stdout.read_to_string(&mut result).unwrap();
-        assert_eq!(result, "cleaned");
+        assert_drop_waits_for_cleanup(|process| {
+            (Box::new(Shutdown::new(None, Some(process))), None)
+        });
     }
 
     #[test]

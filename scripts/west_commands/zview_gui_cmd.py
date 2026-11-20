@@ -57,7 +57,9 @@ class ZViewGuiCommand(WestCommand):
         )
         # Keep in step with zview_gui.cli.add_serve_options (checked by the
         # tests); the package may not be installed when west builds its help.
-        parser.add_argument("-d", "--build-dir", help="Zephyr build directory.")
+        parser.add_argument("-d", "--build-dir",
+                            help="Zephyr build directory. Relative to --data-root when supplied, "
+                                 "otherwise the current directory.")
         parser.add_argument("--domain", help="Firmware image of a sysbuild build.")
         parser.add_argument("-e", "--elf-file", help="ELF override.")
         parser.add_argument("-r", "--runner", help="Probe runner override (gdb, jlink, nrfutil, pyocd).")
@@ -99,7 +101,10 @@ class ZViewGuiCommand(WestCommand):
         sys.path.append(str(Path(zephyr_base) / "scripts" / "west_commands"))
         from build_helpers import find_build_dir, is_zephyr_build
 
-        build_dir = find_build_dir(args.build_dir)
+        if args.build_dir is None:
+            build_dir = find_build_dir(None)
+        else:
+            build_dir = (Path(args.data_root or ".") / args.build_dir).resolve()
         if not is_zephyr_build(build_dir):
             self.die(f"'{build_dir}' is not a Zephyr build directory. "
                      "Run `west build` or pass -d.")

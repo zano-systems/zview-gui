@@ -1,22 +1,35 @@
 """Launch helpers, the `zview-gui` command and the adapter's auto-connect startup path."""
 
+import argparse
 import asyncio
 import io
 import json
 import os
 import socket
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from urllib.request import urlopen
 
 from aiohttp import web
 from test_build_context import make_build
+from test_packaging import load_west_command
 from zview_gui import cli, server
 from zview_gui.console import Console
 from zview_gui.launch import data_root_for, heap_period, live_request
 from zview_gui.session import SessionController
+from zview_gui.site_assets import REQUIRED_ASSETS
+
+
+def make_site(site):
+    for name in REQUIRED_ASSETS:
+        path = site / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"site asset")
+    return site
 
 
 class HelperTests(unittest.TestCase):
@@ -27,20 +40,20 @@ class HelperTests(unittest.TestCase):
         self.build = make_build(self.top)
 
     def make_site(self, name):
-        site = self.top / name
-        (site / "pkg").mkdir(parents=True)
-        (site / "index.html").write_text(f"<html>{name}</html>")
-        (site / "pkg" / "zview_desktop_bg.wasm").write_bytes(b"\0asm")
-        return site
+        return make_site(self.top / name)
 
-    def test_site_needs_page_and_wasm(self):
+    def test_site_requires_bootstrap_and_both_fonts(self):
         site = self.top / "web"
         self.assertFalse(server.site_ready(site))
-        (site / "pkg").mkdir(parents=True)
-        (site / "index.html").write_text("<html></html>")
-        self.assertFalse(server.site_ready(site))
-        (site / "pkg" / "zview_desktop_bg.wasm").write_bytes(b"\0asm")
-        self.assertTrue(server.site_ready(site))
+        make_site(site)
+        for name in ("startup.mjs", "fonts/IBMPlexSans-Regular.source.ttf",
+                     "fonts/JetBrainsMono-Regular.source.ttf"):
+            with self.subTest(name=name):
+                self.assertTrue(server.site_ready(site))
+                path = site / name
+                path.unlink()
+                self.assertFalse(server.site_ready(site))
+                path.write_bytes(b"site asset")
 
     def test_packaged_site_comes_before_the_checkout_build(self):
         packaged, checkout = self.top / "packaged", self.make_site("checkout")
@@ -233,10 +246,38 @@ class CommandLineTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.top = Path(temp.name).resolve()
         self.build = make_build(self.top)
-        self.site = self.top / "site"
-        (self.site / "pkg").mkdir(parents=True)
-        (self.site / "index.html").write_text("<html></html>")
-        (self.site / "pkg" / "zview_desktop_bg.wasm").write_bytes(b"\0asm")
+        self.site = make_site(self.top / "site")
+
+    def test_west_resolves_explicit_build_paths_and_preserves_discovery(self):
+        west = load_west_command()
+        command = west.ZViewGuiCommand()
+        command.name, command.help, command.description = "zview-gui", "", ""
+        command.topdir, command.color_ui = self.top, False
+        parser = command.do_add_parser(argparse.ArgumentParser().add_subparsers())
+        helpers = types.ModuleType("build_helpers")
+        other_cwd = self.site
+        helpers.find_build_dir = Mock(return_value=self.build)
+        helpers.is_zephyr_build = lambda path: (Path(path) / "CMakeCache.txt").is_file()
+        previous = Path.cwd()
+        self.addCleanup(os.chdir, previous)
+        os.chdir(other_cwd)
+        for build in ("build", str(self.build), None):
+            with self.subTest(build=build), \
+                    patch.dict(os.environ, {"ZEPHYR_BASE": str(self.top)}), \
+                    patch.dict(sys.modules, {"build_helpers": helpers}), \
+                    patch.object(sys, "path", sys.path.copy()), \
+                    patch.object(command, "_package", return_value=cli), \
+                    patch.object(cli, "run") as run:
+                helpers.find_build_dir.reset_mock()
+                flags = [] if build is None else ["-d", build]
+                args = parser.parse_args(["--data-root", str(self.top), *flags])
+                command.do_run(args, [])
+                run.assert_called_once_with(args, build_dir=self.build, topdir=self.top,
+                                            site=None, color=False)
+                if build is None:
+                    helpers.find_build_dir.assert_called_once_with(None)
+                else:
+                    helpers.find_build_dir.assert_not_called()
 
     def run_main(self, *argv):
         served = {}

@@ -18,6 +18,7 @@ from .heap_capture import HeapCaptureBusy
 from .native_dialog import NativeDialogBusy, NativeDialogs, initial_directory, validate_selection
 from .paths import INPUT_LIMIT, input_path
 from .session import SessionBusy, SessionController
+from .site_assets import missing_assets
 from .view_selection import ViewBusy
 
 HERE = Path(__file__).resolve().parent
@@ -34,9 +35,8 @@ SITE = web.AppKey("site", Path)
 
 
 def site_ready(site):
-    """The browser site is present: its page and WASM module."""
-    site = Path(site)
-    return (site / "index.html").is_file() and (site / "pkg" / "zview_desktop_bg.wasm").is_file()
+    """The browser has all assets required to start."""
+    return not missing_assets(site)
 
 
 def default_site():

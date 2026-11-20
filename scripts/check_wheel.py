@@ -10,25 +10,26 @@ the packaged site and fetches its page and WASM module.
 
 import asyncio
 import re
+import runpy
 import sys
 import tempfile
 import zipfile
 from pathlib import Path
 
 SITE = "zview_gui/site/"
-REQUIRED = ("index.html", "main.js", "startup.mjs", "pkg/zview_desktop.js",
-            "pkg/zview_desktop_bg.wasm", "fonts/OFL.txt")
 # Nothing but the package, its site and the metadata belongs in the wheel.
 ALLOWED = re.compile(r"zview_gui/(?:[a-z_]+\.py|site/.+)|zview_gui-[^/]+\.dist-info/.+")
 
 
 def check_contents(wheel):
+    manifest = Path(__file__).resolve().parents[1] / "web-ui/zview_gui/site_assets.py"
+    required = runpy.run_path(str(manifest))["REQUIRED_ASSETS"]
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
         metadata = next(n for n in names if n.endswith(".dist-info/METADATA"))
         text = archive.read(metadata).decode()
         entry_points = archive.read(metadata.replace("METADATA", "entry_points.txt")).decode()
-    problems = [f"missing {SITE}{name}" for name in REQUIRED if SITE + name not in names]
+    problems = [f"missing {SITE}{name}" for name in required if SITE + name not in names]
     problems += [f"retired browser loader asset {name}" for name in names
                  if name in {SITE + "documents.mjs", SITE + "initial.json", SITE + "session.json"}]
     problems += [f"unexpected {name}" for name in names if not ALLOWED.fullmatch(name)]

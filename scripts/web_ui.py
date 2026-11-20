@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import runpy
 import shutil
 import subprocess
 import sys
@@ -12,6 +13,7 @@ from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 SITE = ROOT / "target" / "web"
+missing_assets = runpy.run_path(str(ROOT / "web-ui/zview_gui/site_assets.py"))["missing_assets"]
 BINDGEN_VERSION = "0.2.129"  # Must match Cargo.toml and Cargo.lock.
 FONT_BASE = (
     "https://raw.githubusercontent.com/longbridge/gpui-kit/"
@@ -122,10 +124,10 @@ def serve(adapter_args=(), *, python=None, skip_build=False):
         ) from error
     if not skip_build:
         build()
-    required = ("index.html", "main.js", "startup.mjs", "pkg/zview_desktop.js",
-                "pkg/zview_desktop_bg.wasm", "fonts/OFL.txt")
-    if any(not (SITE / name).is_file() for name in required):
-        raise ValueError("No complete browser build found. Run `just web-build` first.")
+    if missing := missing_assets(SITE):
+        raise ValueError(
+            f"No complete browser build found (missing {', '.join(missing)}). "
+            "Run `just web-build` first.")
     subprocess.run([python, "-I", "-m", "zview_gui", *adapter_args, "--site", str(SITE)],
                    cwd=ROOT, check=True)
 

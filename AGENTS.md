@@ -29,7 +29,8 @@ to confirm exact dependency pins and checks; do not duplicate changing versions 
   endpoints, `session.py` manages acquisition/replay, and the build, view-selection
   and heap-capture modules manage their respective contexts and ownership.
   Reuse ZView APIs; do not create another decoder or drive its TUI.
-- `web/main.js` initializes the shared WASM UI and browser document loading.
+- `web/main.js` and `web/startup.mjs` initialize the shared WASM UI and connect
+  it to the required adapter. There is no direct browser document loader.
   Do not move session state or build a second UI framework into JavaScript.
 - Native and web share the same UI foundation and Python adapter for Live/Replay.
   Both hosts always require that adapter. `export_recording.py` regenerates
