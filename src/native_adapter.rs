@@ -6,7 +6,11 @@ use std::{
     net::{TcpStream, ToSocketAddrs},
     path::PathBuf,
     process::{Child, Command, Stdio},
-    sync::mpsc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     time::{Duration, Instant},
 };
 
@@ -85,11 +89,11 @@ impl Options {
         Ok(options)
     }
 
-    pub fn start(self) -> Result<(String, Option<OwnedAdapter>), String> {
+    fn start(self, cancelled: &AtomicBool) -> Started {
         if let Some(endpoint) = self.endpoint {
             return Ok((endpoint, None));
         }
-        let process = OwnedAdapter::start(&self.python, &self.data_root)?;
+        let process = OwnedAdapter::start(&self.python, &self.data_root, cancelled)?;
         Ok((process.endpoint.clone(), Some(process)))
     }
 }
@@ -133,19 +137,27 @@ type Started = Result<(String, Option<OwnedAdapter>), String>;
 
 /// Retain startup ownership even if the UI cancels its connection task.
 /// Closing during startup waits for this worker and cleans up its result.
-pub(crate) struct Startup(Option<std::thread::JoinHandle<Started>>);
+pub(crate) struct Startup {
+    worker: Option<std::thread::JoinHandle<Started>>,
+    cancelled: Arc<AtomicBool>,
+}
 
 impl Startup {
     pub fn new(options: Options) -> Self {
-        Self(Some(std::thread::spawn(move || options.start())))
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let signal = cancelled.clone();
+        Self {
+            worker: Some(std::thread::spawn(move || options.start(&signal))),
+            cancelled,
+        }
     }
 
     pub fn try_finish(&mut self) -> Option<Started> {
-        if !self.0.as_ref()?.is_finished() {
+        if !self.worker.as_ref()?.is_finished() {
             return None;
         }
         Some(
-            self.0
+            self.worker
                 .take()
                 .unwrap()
                 .join()
@@ -156,7 +168,8 @@ impl Startup {
 
 impl Drop for Startup {
     fn drop(&mut self) {
-        if let Some(worker) = self.0.take() {
+        if let Some(worker) = self.worker.take() {
+            self.cancelled.store(true, Ordering::Relaxed);
             // Dropping a successful result also shuts down its owned adapter.
             drop(worker.join());
         }
@@ -188,7 +201,14 @@ impl Drop for Shutdown {
 }
 
 impl OwnedAdapter {
-    fn start(python: &OsString, root: &std::path::Path) -> Result<Self, String> {
+    fn start(
+        python: &OsString,
+        root: &std::path::Path,
+        cancelled: &AtomicBool,
+    ) -> Result<Self, String> {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("Adapter startup cancelled.".into());
+        }
         // Isolated Python uses the selected environment's installed package,
         // never a guessed sibling checkout or an injected PYTHONPATH.
         let child = Command::new(python)
@@ -216,8 +236,7 @@ impl OwnedAdapter {
             // directly to fd 1 instead of Python's redirected sys.stdout.
             let _ = std::io::copy(&mut stdout, &mut std::io::stderr());
         });
-        let line = receiver.recv_timeout(Duration::from_secs(15))
-            .map_err(|_| "Adapter startup timed out. Check the selected Python environment and terminal diagnostics.".to_owned())??;
+        let line = wait_for_readiness(receiver, cancelled)?;
         let ready: Ready = serde_json::from_str(&line)
             .map_err(|_| "Adapter did not report readiness. Install this checkout's adapter in ZVIEW_GUI_PYTHON's environment; see terminal diagnostics.".to_owned())?;
         if ready.protocol != crate::adapter_protocol::PROTOCOL_VERSION {
@@ -236,6 +255,29 @@ impl OwnedAdapter {
         self.child
             .as_mut()
             .is_some_and(|child| matches!(child.try_wait(), Ok(Some(_))))
+    }
+}
+
+fn wait_for_readiness(
+    receiver: mpsc::Receiver<Result<String, String>>,
+    cancelled: &AtomicBool,
+) -> Result<String, String> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("Adapter startup cancelled.".into());
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("Adapter startup timed out. Check the selected Python environment and terminal diagnostics.".into());
+        }
+        match receiver.recv_timeout(remaining.min(Duration::from_millis(25))) {
+            Ok(result) => return result,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("Adapter readiness reader exited unexpectedly.".into());
+            }
+        }
     }
 }
 
@@ -419,6 +461,109 @@ mod tests {
             .unwrap()
     }
 
+    #[test]
+    fn cancelled_readiness_does_not_wait_for_the_startup_deadline() {
+        let (_sender, receiver) = mpsc::channel();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let signal = cancelled.clone();
+        let (result, done) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = result.send(wait_for_readiness(receiver, &signal));
+        });
+        assert_eq!(
+            done.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+        cancelled.store(true, Ordering::Relaxed);
+        assert_eq!(
+            done.recv_timeout(Duration::from_secs(2)).unwrap(),
+            Err("Adapter startup cancelled.".into())
+        );
+    }
+
+    #[gpui_kit::test]
+    #[cfg(unix)]
+    fn quit_action_services_ui_events_before_owned_adapter_cleanup_finishes(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use std::{cell::Cell, rc::Rc};
+
+        gpui::actions!(quit_regression, [UnrelatedAction]);
+
+        let (app, mut cx) = crate::tests::setup(cx);
+        let gate = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("zview-quit-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(gate.parent().unwrap()).unwrap();
+        let mut child = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "cat >/dev/null; echo closing; \
+                 i=0; while [ ! -f \"$1\" ]; do \
+                   [ \"$i\" -lt 180 ] || exit 1; i=$((i + 1)); sleep 0.02; \
+                 done; echo cleaned > \"$1\"",
+                "cleanup",
+            ])
+            .arg(&gate)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let (closing_tx, closing) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut line = String::new();
+            let _ = BufReader::new(stdout).read_line(&mut line);
+            let _ = closing_tx.send(line);
+        });
+        let finished = Rc::new(Cell::new(None));
+        cx.update(|_, cx| {
+            let finished = finished.clone();
+            let gate = gate.clone();
+            crate::native_titlebar::bind_quit(
+                app.downgrade(),
+                move |_| {
+                    finished.set(Some(
+                        std::fs::read_to_string(&gate).is_ok_and(|text| text == "cleaned\n"),
+                    ));
+                },
+                cx,
+            );
+            app.update(cx, |app, _| {
+                app.adapter.process = Some(OwnedAdapter {
+                    child: Some(child),
+                    endpoint: String::new(),
+                });
+            });
+        });
+
+        cx.simulate_keystrokes("secondary-q");
+        assert_eq!(
+            closing.recv_timeout(Duration::from_secs(2)).as_deref(),
+            Ok("closing\n"),
+            "Quit did not request child shutdown"
+        );
+        // Dispatch another UI action while the child is gated.
+        let handled = Rc::new(Cell::new(false));
+        cx.update(|_, cx| {
+            let handled = handled.clone();
+            cx.on_action(move |_: &UnrelatedAction, _| handled.set(true));
+        });
+        cx.dispatch_action(UnrelatedAction);
+        assert!(handled.get(), "foreground work stalled during cleanup");
+        assert_eq!(finished.get(), None, "Quit finished before release");
+
+        std::fs::write(&gate, "").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while finished.get().is_none() && Instant::now() < deadline {
+            cx.executor().advance_clock(Duration::from_millis(25));
+            cx.run_until_parked();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let _ = std::fs::remove_file(gate);
+        assert_eq!(finished.get(), Some(true), "Quit did not wait for cleanup");
+    }
+
     #[cfg(unix)]
     fn assert_drop_waits_for_cleanup(
         make_guard: impl FnOnce(OwnedAdapter) -> (Box<dyn Send>, Option<mpsc::Sender<()>>),
@@ -518,10 +663,13 @@ mod tests {
     fn closing_during_startup_waits_and_cleans_up_the_result() {
         assert_drop_waits_for_cleanup(|process| {
             let (release, pending) = mpsc::channel();
-            let startup = Startup(Some(std::thread::spawn(move || {
-                pending.recv_timeout(Duration::from_secs(3)).unwrap();
-                Ok((String::new(), Some(process)))
-            })));
+            let startup = Startup {
+                worker: Some(std::thread::spawn(move || {
+                    pending.recv_timeout(Duration::from_secs(3)).unwrap();
+                    Ok((String::new(), Some(process)))
+                })),
+                cancelled: Arc::default(),
+            };
             (Box::new(startup), Some(release))
         });
     }
@@ -615,7 +763,7 @@ mod tests {
                 .map(OsString::from),
         )
         .unwrap();
-        let (endpoint, owned) = options.start().unwrap();
+        let (endpoint, owned) = options.start(&AtomicBool::default()).unwrap();
         assert_eq!(endpoint, "http://127.0.0.1:8765");
         assert!(owned.is_none());
     }
@@ -625,7 +773,8 @@ mod tests {
     fn native_transport_replays_through_owned_python_adapter() {
         let python = std::env::var_os("ZVIEW_GUI_PYTHON").expect("set ZVIEW_GUI_PYTHON");
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let process = OwnedAdapter::start(&python, &root).expect("start owned adapter");
+        let process = OwnedAdapter::start(&python, &root, &AtomicBool::default())
+            .expect("start owned adapter");
         let endpoint = process.endpoint.clone();
         smol::block_on(async {
             let messages = connect(endpoint.clone(), uuid::Uuid::new_v4().to_string())

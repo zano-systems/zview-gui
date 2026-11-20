@@ -305,7 +305,10 @@ impl Session {
 
     pub fn status_label(&self) -> &str {
         if self.mode() == Mode::Replay {
-            return self.status.as_str();
+            return match self.status {
+                Status::Reading => "Decoding",
+                status => status.as_str(),
+            };
         }
         match self.status {
             Status::Opening => "Connecting",
@@ -669,6 +672,13 @@ impl ClientState {
             Status::Failed | Status::Lost => SessionIndicator::Failed,
             Status::Ended | Status::Stopped => SessionIndicator::Idle,
             Status::Reading if session.read_warning => SessionIndicator::Warning,
+            Status::Reading if session.mode() == Mode::Replay => {
+                if session.frames_received == 0 {
+                    SessionIndicator::Busy
+                } else {
+                    SessionIndicator::Healthy
+                }
+            }
             Status::Reading if !fresh_frame => SessionIndicator::Waiting,
             Status::Reading => SessionIndicator::Healthy,
         }
@@ -1485,8 +1495,10 @@ mod tests {
         *state.session.as_mut().unwrap().source = Source::Replay {
             recording: "recording.ndjson.gz".into(),
         };
-        assert_eq!(state.indicator(true), SessionIndicator::Healthy);
-        assert!(!state.animate_live_status(true, false));
+        assert_eq!(state.indicator(false), SessionIndicator::Busy);
+        state.session.as_mut().unwrap().frames_received = 1;
+        assert_eq!(state.indicator(false), SessionIndicator::Healthy);
+        assert!(!state.animate_live_status(false, false));
     }
 
     #[test]

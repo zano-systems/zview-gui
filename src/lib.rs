@@ -1736,12 +1736,14 @@ pub fn run() {
                 cx.new(|cx| {
                     let app = ThreadsApp::new(window, cx);
                     let weak = cx.weak_entity();
+                    native_titlebar::bind_quit(weak.clone(), |cx| cx.quit(), cx);
                     window.on_window_should_close(cx, move |_, cx| {
                         let _ = weak.update(cx, |app, cx| app.close_native(cx));
                         false
                     });
-                    // System Quit bypasses the window close request. Cleanup must
-                    // finish before process exit, not on a detached reaper thread.
+                    // OS termination that bypasses our Quit action cannot be
+                    // deferred here. GPUI's async quit budget is shorter than
+                    // the adapter's cleanup grace period, so join as a fallback.
                     cx.on_app_quit(|app, _| {
                         app.adapter.connection_task.take();
                         app.adapter.startup.take();
@@ -1755,6 +1757,9 @@ pub fn run() {
             },
         )
         .expect("open ZView window");
+        cx.set_menus([
+            Menu::new("ZView").items([MenuItem::action("Quit ZView", native_titlebar::Quit)])
+        ]);
         cx.activate(true);
     });
 }

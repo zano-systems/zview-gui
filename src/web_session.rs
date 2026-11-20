@@ -340,6 +340,10 @@ impl ThreadsApp {
         } else {
             labels[0].clone()
         };
+        #[cfg(test)]
+        let status_selector = format!("session-status-text:{status}");
+        #[cfg(not(test))]
+        let status_selector = format!("session-indicator-{}", indicator.as_str());
         let icon = match indicator {
             SessionIndicator::Busy => Spinner::new()
                 .icon(assets::IconName::LoaderCircle)
@@ -415,9 +419,7 @@ impl ThreadsApp {
                                 .child(
                                     div()
                                         .id("session-status-indicator")
-                                        .debug_selector(move || {
-                                            format!("session-indicator-{}", indicator.as_str())
-                                        })
+                                        .debug_selector(move || status_selector.clone())
                                         .flex_shrink_0()
                                         .aria_label(format!("Session status: {status}"))
                                         .child(icon),
