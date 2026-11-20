@@ -5,8 +5,9 @@ activity, kernel objects, and memory usage, built in Rust with
 [GPUI Kit](https://gpui-kit.com/).
 
 ZView GUI is a companion frontend to [ZView](https://github.com/rodrigopex/zview),
-which provides data acquisition and decoding. Native and browser sessions both
-require the Python adapter for Live acquisition and Replay.
+which provides data acquisition and decoding. The browser and the default native
+workflow require the Python adapter. Native also has a separate
+[experimental Rust backend](#experimental-native-rust-backend).
 
 ## Status
 
@@ -36,7 +37,7 @@ MCP integration is not implemented.
   state legends on hover or keyboard focus. Esc dismisses a focused explanation.
   Current warnings and missing-data notices remain visible.
 - Time-history charts, work queue activity, and captured heap fragmentation maps.
-- One shared Rust UI for native and WebAssembly builds. The required
+- One shared Rust UI for native and WebAssembly builds. In the default workflows the
   [Python session adapter](web-ui/README.md) streams live target measurements or
   decoded ZView recordings through HTTP commands and WebSocket events.
 - The adapter UI has persistent sidebar session controls, with editable
@@ -179,6 +180,39 @@ link when collapsed).
 All session actions use the shared sidebar controls, with the collapsed session
 icon centered on the navigation icons. Activating it by mouse or keyboard expands
 the sidebar and focuses the session controls.
+
+### Experimental native Rust backend
+
+```sh
+cargo run --locked --bin zview-gui-rs -- --rust-core
+```
+
+This explicit opt-in runs Live and Replay in the native app without starting
+Python or connecting to an adapter. Plain `cargo run`, `just gui`, and the browser
+still use the Python adapter. Do not combine `--rust-core` with `--adapter`,
+`--python`, `--data-root`, or `--build-dir`.
+
+In **Configure session**, enter paths to trusted local files (relative to the
+working directory or absolute). For **Replay**, use a `.ndjson.gz` recording and
+its matching ELF. For example, use `test-data/zview-bench-60s/capture.ndjson.gz`
+and `test-data/zview-bench-60s/zephyr.elf`. Replay decodes up to 10 frames/s,
+retains the last 256 frames, and shows heap maps only where the recording has them.
+
+For **Live**, enter the matching ELF and the address of a dedicated, trusted
+loopback GDB stub you control (for example, `127.0.0.1:12349`, or
+`localhost:12349`). Firmware must already be running. This connection can halt,
+read, resume and detach; it does not flash or reset. The startup inventory is
+polled with a 0.1 s minimum period between poll starts regardless of screen.
+The achieved rate can be lower. Live heap maps, view-driven acquisition, dynamic
+inventory, adjustable CPU averaging, Live recording, other runners, build
+discovery and system file dialogs are not available in this mode. Stop or Quit
+waits for the worker to finish its current operation and attempt cleanup.
+
+See the [Rust port design](designs/zview-rust-port.md#phase-5-opt-in-native-gui)
+for supported layouts, protocol and shutdown limits.
+The separate headless Rust CLI has an [optional probe-rs transport](designs/zview-rust-phase-8.md)
+for live dump and bounded recording. It has not been qualified on hardware
+and is not available in either GUI.
 
 ## West integration (`west zview-gui`)
 

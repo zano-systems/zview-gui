@@ -250,6 +250,9 @@ impl ThreadsApp {
     ) -> Self {
         let mut app = Self::adapter_session(window, cx);
         match options {
+            Ok(options) if options.backend == native_adapter::Backend::RustCore => {
+                app.start_rust_core(window, cx);
+            }
             Ok(options) => app.start_native_adapter(options, cx),
             Err(error) => {
                 app.adapter.state.connection = adapter_protocol::Connection::Failed;
@@ -1749,6 +1752,7 @@ pub fn run() {
                         app.adapter.startup.take();
                         app.adapter.process.take();
                         app.adapter.shutdown.take();
+                        app.adapter.rust_core.take();
                         async {}
                     })
                     .detach();

@@ -28,6 +28,9 @@ extern "C" {
 #[cfg(not(target_family = "wasm"))]
 #[path = "native_session.rs"]
 mod native;
+#[cfg(not(target_family = "wasm"))]
+#[path = "native_core.rs"]
+pub(super) mod native_core;
 #[path = "web_session.rs"]
 mod session_ui;
 #[cfg(all(test, not(target_family = "wasm")))]
@@ -117,6 +120,8 @@ pub(super) struct Controls {
     #[cfg(not(target_family = "wasm"))]
     pub(super) startup: Option<crate::native_adapter::Startup>,
     #[cfg(not(target_family = "wasm"))]
+    pub(super) rust_core: Option<native_core::Backend>,
+    #[cfg(not(target_family = "wasm"))]
     pub(super) closing: bool,
     #[cfg(not(target_family = "wasm"))]
     pub(super) shutdown: Option<crate::native_adapter::Shutdown>,
@@ -163,6 +168,8 @@ impl Controls {
             #[cfg(not(target_family = "wasm"))]
             startup: None,
             #[cfg(not(target_family = "wasm"))]
+            rust_core: None,
+            #[cfg(not(target_family = "wasm"))]
             closing: false,
             #[cfg(not(target_family = "wasm"))]
             shutdown: None,
@@ -171,6 +178,13 @@ impl Controls {
 }
 
 impl Controls {
+    fn uses_rust_core(&self) -> bool {
+        #[cfg(not(target_family = "wasm"))]
+        return self.rust_core.is_some();
+        #[cfg(target_family = "wasm")]
+        false
+    }
+
     fn fresh_frame(&self) -> bool {
         let same_session = self.state.session.as_ref().is_some_and(|session| {
             self.displayed
@@ -233,6 +247,11 @@ impl ThreadsApp {
         let Some(session) = self.adapter.state.session.as_ref() else {
             return false;
         };
+        if self.adapter.uses_rust_core() {
+            return session.mode() == Mode::Live
+                && session.status.is_active()
+                && session.last_frame.is_none();
+        }
         if session.mode() != Mode::Live
             || session.status != Status::Reading
             || session.inventory.is_none()
@@ -253,6 +272,9 @@ impl ThreadsApp {
     }
 
     pub(crate) fn live_view_loading_note(&self) -> String {
+        if self.adapter.uses_rust_core() {
+            return "Waiting for the first Rust GDB sample…".into();
+        }
         if self
             .adapter
             .state
@@ -275,6 +297,15 @@ impl ThreadsApp {
 
     /// The current screen owns one selection and optional detail request.
     pub(crate) fn sync_live_view(&mut self, cx: &mut Context<Self>) {
+        if self.adapter.uses_rust_core() {
+            if self.adapter.state.is_live()
+                && self.adapter.history_screen.as_ref() != Some(&self.screen)
+            {
+                self.live_history.clear();
+                self.adapter.history_screen = Some(self.screen.clone());
+            }
+            return;
+        }
         let binding = self
             .adapter
             .state
@@ -399,6 +430,11 @@ impl ThreadsApp {
         if session.mode() != Mode::Live {
             return None;
         }
+        if self.adapter.uses_rust_core() {
+            return Some(
+                "Live heap maps are not supported by the experimental Rust backend.".into(),
+            );
+        }
         if self.adapter.state.connection != Connection::Connected
             || session.status != Status::Reading
         {
@@ -461,6 +497,17 @@ impl ThreadsApp {
         self.adapter.state.pending = true;
         self.error = None;
         cx.notify();
+        #[cfg(not(target_family = "wasm"))]
+        if self.adapter.uses_rust_core() {
+            spawn_session_task(cx, async move |mut host| {
+                let _ = host.update(|this, window, cx| {
+                    this.adapter.state.pending = false;
+                    let result = this.rust_command(path, body, window, cx);
+                    this.finish_adapter_command(path, result, window, cx);
+                });
+            });
+            return;
+        }
         let url = self.adapter_url(path);
         spawn_session_task(cx, async move |mut host| {
             let result = async {
@@ -482,22 +529,32 @@ impl ThreadsApp {
             .await;
             let _ = host.update(|this, window, cx| {
                 this.adapter.state.pending = false;
-                if let Err(error) = result {
-                    this.adapter.draft.error = Some(error.clone());
-                    this.error = Some(error);
-                    if path == "/api/session/usage-window" {
-                        this.adapter.usage.restore(window, cx);
-                    }
-                } else if !matches!(path, "/api/session/stop" | "/api/session/usage-window")
-                    && this.adapter.draft.open
-                {
-                    this.adapter.draft.dismiss();
-                    window.close_dialog(cx);
-                }
-                // HTTP is an acknowledgement; only the stream replaces state.
-                cx.notify();
+                this.finish_adapter_command(path, result, window, cx);
             });
         });
+    }
+
+    fn finish_adapter_command(
+        &mut self,
+        path: &str,
+        result: Result<(), String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(error) = result {
+            self.adapter.draft.error = Some(error.clone());
+            self.error = Some(error);
+            if path == "/api/session/usage-window" {
+                self.adapter.usage.restore(window, cx);
+            }
+        } else if !matches!(path, "/api/session/stop" | "/api/session/usage-window")
+            && self.adapter.draft.open
+        {
+            self.adapter.draft.dismiss();
+            window.close_dialog(cx);
+        }
+        // Command acknowledgement never replaces state; only events do.
+        cx.notify();
     }
 
     fn accept_adapter(
@@ -597,7 +654,25 @@ impl ThreadsApp {
                     self.frame = self.frames.len() - 1;
                     self.sync_heaps(window, cx);
                 }
-                if is_live
+                if is_live && self.adapter.uses_rust_core() {
+                    self.sync_live_view(cx);
+                    use crate::live_history::Key;
+                    self.live_history.record_where(
+                        &self.frames[self.frame],
+                        self.screen == Screen::Overview,
+                        |key| match (&self.screen, key) {
+                            (Screen::Overview, Key::Heap(_)) => true,
+                            (Screen::Thread(a), Key::Thread(b)) => a == b,
+                            (Screen::Heap(a), Key::Heap(b)) => a == b,
+                            (Screen::Semaphore(a), Key::Semaphore(b)) => a == b,
+                            (Screen::Mutex(a), Key::Mutex(b)) => a == b,
+                            (Screen::MessageQueue(a), Key::MessageQueue(b)) => a == b,
+                            (Screen::MemorySlab(a), Key::Slab(b)) => a == b,
+                            (Screen::WorkQueue(a), Key::WorkQueue(b)) => a == b,
+                            _ => false,
+                        },
+                    );
+                } else if is_live
                     && self.adapter.history_view.is_some()
                     && self.adapter.history_view == received_view
                 {

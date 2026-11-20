@@ -1,4 +1,4 @@
-//! Browser-local chart history, independent of full frames and acquisition rate.
+//! UI-local chart history, independent of full frames and acquisition rate.
 //!
 //! Correlated values (e.g. a mutex's depth and owner) share a change log so
 //! tooltips stay aligned. Overview metrics and heap-map measurements have their
@@ -233,6 +233,12 @@ impl History {
     }
 
     pub fn record(&mut self, frame: &Frame, overview: bool) {
+        self.record_where(frame, overview, |_| true);
+    }
+
+    /// Fixed acquisition can display the full frame but only cache rows with
+    /// charts on the current screen. CPU/stack rollups still use all threads.
+    pub fn record_where(&mut self, frame: &Frame, overview: bool, keep: impl Fn(&Key) -> bool) {
         if !frame.is_live {
             self.interrupt();
             return;
@@ -261,13 +267,16 @@ impl History {
             rows.push(Reading::Thread(t));
         }
         for h in &frame.heaps {
-            if let Some(chunks) = &h.chunks {
+            let key = HeapKey {
+                address: h.address,
+                name: h.name.clone(),
+            };
+            if let Some(chunks) = &h.chunks
+                && keep(&Key::Heap(key.clone()))
+            {
                 let value = crate::heap_map::ChunkMap::new(chunks).map(|map| map.fragmentation());
                 self.fragmentation
-                    .entry(HeapKey {
-                        address: h.address,
-                        name: h.name.clone(),
-                    })
+                    .entry(key)
                     .or_default()
                     .observe(at, value, 0);
             }
@@ -316,6 +325,9 @@ impl History {
         let mut seen = HashSet::new();
         for row in rows {
             let key = row.key();
+            if !keep(&key) {
+                continue;
+            }
             let extra = row.extra_bytes();
             seen.insert(key.clone());
             self.objects.entry(key).or_default().observe(at, row, extra);

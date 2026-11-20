@@ -17,12 +17,21 @@ use std::{
 const HELP: &str = "ZView native (zview-gui-rs)\n\
     cargo run -- [--python PYTHON] [--data-root DIRECTORY] [--build-dir DIRECTORY]\n\
     cargo run -- --adapter http://127.0.0.1:PORT\n\
+    cargo run -- --rust-core\n\
     Python defaults to ZVIEW_GUI_PYTHON, then python3. Install this checkout's\n\
-    adapter in that interpreter. The Python adapter is required for all native sessions.\n\
+    adapter in that interpreter for the default native backend. --rust-core opts into\n\
+    experimental local Replay and trusted loopback GDB Live without Python.\n\
     --build-dir (-d) starts Live once the adapter connects. Relative build paths\n\
     are resolved under --data-root (default: current directory). Connecting does not flash firmware.";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Backend {
+    Python,
+    RustCore,
+}
+
 pub(crate) struct Options {
+    pub backend: Backend,
     pub endpoint: Option<String>,
     pub build_dir: Option<String>,
     python: OsString,
@@ -32,6 +41,7 @@ pub(crate) struct Options {
 impl Options {
     pub fn parse(args: impl Iterator<Item = OsString>) -> Result<Self, String> {
         let mut options = Self {
+            backend: Backend::Python,
             endpoint: None,
             build_dir: None,
             python: std::env::var_os("ZVIEW_GUI_PYTHON").unwrap_or_else(|| "python3".into()),
@@ -42,6 +52,7 @@ impl Options {
         while let Some(arg) = args.next() {
             match arg.to_str() {
                 Some("--help" | "-h") => return Err(HELP.into()),
+                Some("--rust-core") => options.backend = Backend::RustCore,
                 Some("--adapter" | "--python" | "--data-root" | "--build-dir" | "-d") => {
                     let value = args
                         .next()
@@ -80,6 +91,9 @@ impl Options {
                 }
             }
         }
+        if options.backend == Backend::RustCore && (configured || options.endpoint.is_some()) {
+            return Err("--rust-core cannot be combined with --adapter, --python, --data-root or --build-dir. Enter local paths in Configure session.".into());
+        }
         if options.endpoint.is_some() && configured {
             return Err(
                 "Choose an existing adapter or an owned Python adapter; do not combine them."
@@ -90,6 +104,9 @@ impl Options {
     }
 
     fn start(self, cancelled: &AtomicBool) -> Started {
+        if self.backend != Backend::Python {
+            return Err("The Rust core backend does not start a Python adapter.".into());
+        }
         if let Some(endpoint) = self.endpoint {
             return Ok((endpoint, None));
         }
@@ -716,6 +733,36 @@ mod tests {
             vec!["--adapter", "http://localhost:1234", "--build-dir", "build"],
         ] {
             assert!(Options::parse(args.into_iter().map(OsString::from)).is_err());
+        }
+    }
+
+    #[test]
+    fn native_rust_backend_is_explicit_and_rejects_adapter_flags() {
+        let parse = |args: &[&str]| Options::parse(args.iter().copied().map(OsString::from));
+        assert_eq!(parse(&[]).unwrap().backend, Backend::Python);
+        assert_eq!(
+            parse(&["--adapter", "http://localhost:1234"])
+                .unwrap()
+                .backend,
+            Backend::Python
+        );
+        let core = parse(&["--rust-core"]).unwrap();
+        assert_eq!(core.backend, Backend::RustCore);
+        assert!(
+            core.start(&AtomicBool::default())
+                .err()
+                .unwrap()
+                .contains("does not start")
+        );
+        for (flag, value) in [
+            ("--adapter", "http://localhost:1234"),
+            ("--python", "python3"),
+            ("--data-root", "."),
+            ("--build-dir", "build"),
+            ("-d", "build"),
+        ] {
+            assert!(parse(&[flag, value, "--rust-core"]).is_err());
+            assert!(parse(&["--rust-core", flag, value]).is_err());
         }
     }
 

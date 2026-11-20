@@ -82,6 +82,19 @@ impl Draft {
         ]
     }
 
+    #[cfg(not(target_family = "wasm"))]
+    pub(super) fn use_local_paths(&self, window: &mut Window, cx: &mut App) {
+        for (input, placeholder) in [
+            (&self.elf, "Path to the matching ELF"),
+            (&self.recording, "Path to the recording (.ndjson.gz)"),
+            (&self.target, "For example, 127.0.0.1:12349"),
+        ] {
+            input.update(cx, |input, cx| {
+                input.set_placeholder(placeholder, window, cx)
+            });
+        }
+    }
+
     pub fn dismiss(&mut self) {
         self.open = false;
         self.generation = self.generation.wrapping_add(1);
@@ -153,17 +166,29 @@ impl Draft {
             .flatten()
     }
 
-    fn can_open(&self, state: &ClientState, cx: &App) -> bool {
-        self.picker.is_none()
-            && state.can_open()
-            && match self.mode {
-                Mode::Live => !Self::value(&self.build, cx).is_empty(),
-                Mode::Replay => {
-                    !Self::value(&self.recording, cx).is_empty()
-                        && (!Self::value(&self.elf, cx).is_empty()
-                            || !Self::value(&self.build, cx).is_empty())
-                }
+    fn can_open(&self, controls: &Controls, cx: &App) -> bool {
+        if self.picker.is_some() || !controls.state.can_open() {
+            return false;
+        }
+        if controls.uses_rust_core() {
+            return !Self::value(&self.elf, cx).is_empty()
+                && !Self::value(
+                    match self.mode {
+                        Mode::Live => &self.target,
+                        Mode::Replay => &self.recording,
+                    },
+                    cx,
+                )
+                .is_empty();
+        }
+        match self.mode {
+            Mode::Live => !Self::value(&self.build, cx).is_empty(),
+            Mode::Replay => {
+                !Self::value(&self.recording, cx).is_empty()
+                    && (!Self::value(&self.elf, cx).is_empty()
+                        || !Self::value(&self.build, cx).is_empty())
             }
+        }
     }
 }
 
@@ -511,7 +536,9 @@ impl ThreadsApp {
                         .child(layout::note_with_shimmer("session-header-source",
                             state.session.as_ref().map(|s| s.elf.clone()).unwrap_or_else(|| labels[3].clone()), false, false)
                             .w_full()
-                            .text_ellipsis_start()),
+                            .text_ellipsis_start())
+                        .when(self.adapter.uses_rust_core(), |el| el.child(layout::note(
+                            "session-rust-backend", "Experimental Rust backend"))),
                 )
                 .when(indicator == SessionIndicator::Waiting, |el| {
                     el.child(
@@ -730,19 +757,20 @@ impl ThreadsApp {
     fn session_form(&self, cx: &Context<Self>) -> AnyElement {
         let draft = &self.adapter.draft;
         let live = draft.mode == Mode::Live;
+        let rust_core = self.adapter.uses_rust_core();
         let context = draft.context(cx);
         let capabilities = draft.capabilities(self.adapter.state.session.as_ref(), cx);
         div().debug_selector(|| "session-configuration".into())
             .flex().flex_col().gap_3().min_w_0()
             .child(div().flex().items_center().gap_2()
                 .child(div().text_sm().child(if live { "Live settings" } else { "Replay settings" }))
-                .child(if live {
+                .when(!rust_core, |el| el.child(if live {
                     layout::info("session-live-help", "About Live settings",
                         "Only the build directory is required. Advanced settings are filled automatically and can be edited. Collapsing Advanced keeps your values. Connect opens the probe; it does not flash firmware. Browse opens a system dialog; paths must stay inside the configured data root.").into_any_element()
                 } else {
                     layout::info("session-replay-help", "About Replay settings",
                         "Choose a recording and a matching ELF, or a build that supplies the ELF. Replay decodes up to 10 frames/s, not original recording time. Last 256 frames retained. Browse opens a system dialog; paths must stay inside the configured data root.").into_any_element()
-                }))
+                })))
             .child(div().id("session-mode-keyboard")
                 .relative()
                 .child(div().absolute().inset_0().child({
@@ -778,14 +806,26 @@ impl ThreadsApp {
                 }))))
             .when(draft.picker.is_some(), |el| el.child(layout::note("session-path-help",
                 "The system file dialog is open. Select a path or cancel it to continue.")))
-            .child(self.path_field(if live { "Build directory" } else { "Build directory (optional)" }, crate::adapter_protocol::PickerKind::Directory, cx))
-            .when(live, |el| el.child(self.session_advanced(cx)))
-            .when(!live, |el| el
+            .when(rust_core, |el| el
+                .child(layout::note("session-rust-help", if live {
+                    "Use a trusted local GDB stub with matching firmware already running. Polls the startup inventory; no view-driven polling, live heap maps, or adjustable CPU averaging."
+                } else {
+                    "Enter local paths to a trusted recording and its matching ELF. Decodes up to 10 frames/s, not at original capture timing. Retains the last 256 frames."
+                }))
+                .child(field("Matching ELF path", &draft.elf))
+                .child(if live {
+                    field("GDB loopback address:port", &draft.target)
+                } else {
+                    field("Recording path (.ndjson.gz)", &draft.recording)
+                }))
+            .when(!rust_core, |el| el.child(self.path_field(if live { "Build directory" } else { "Build directory (optional)" }, crate::adapter_protocol::PickerKind::Directory, cx)))
+            .when(!rust_core && live, |el| el.child(self.session_advanced(cx)))
+            .when(!rust_core && !live, |el| el
                 .child(field("Firmware image (optional)", &draft.domain))
                 .child(self.path_field("Matching ELF (required without a build)", crate::adapter_protocol::PickerKind::Elf, cx)))
-            .when(!live, |el| el.child(self.path_field("Recording", crate::adapter_protocol::PickerKind::Recording, cx)))
-            .when(!live, |el| el.child(self.session_detection_button(cx)))
-            .when(live && draft.resolving, |el| el.child(
+            .when(!rust_core && !live, |el| el.child(self.path_field("Recording", crate::adapter_protocol::PickerKind::Recording, cx)))
+            .when(!rust_core && !live, |el| el.child(self.session_detection_button(cx)))
+            .when(!rust_core && live && draft.resolving, |el| el.child(
                 layout::note("session-detection-progress", "Detecting settings from the build directory…")))
             .when_some(context, |el, context| {
                 el.child(div().flex().flex_col().gap_1()
@@ -816,7 +856,7 @@ impl ThreadsApp {
             .when_some(draft.error.clone(), |el, error| el.child(layout::note("session-draft-error", error)))
             .when_some(self.adapter.state.session.as_ref().and_then(|s| s.last_notice.clone()),
                 |el, notice| el.child(layout::note("adapter-notice", notice)))
-            .when(live && capabilities.is_none(), |el| el.child(layout::note("discovery-pending",
+            .when(!rust_core && live && capabilities.is_none(), |el| el.child(layout::note("discovery-pending",
                 "Group availability is unknown for these settings. Connect to discover firmware groups.")))
             .when_some(capabilities,
                 |el, capabilities| el
@@ -945,17 +985,34 @@ impl ThreadsApp {
                     } else {
                         "Open replay"
                     })
-                    .disabled(!draft.can_open(&self.adapter.state, cx))
+                    .disabled(!draft.can_open(&self.adapter, cx))
                     .on_click(cx.listener(|app, _, _, cx| app.open_session_draft(cx))),
             )
             .into_any_element()
     }
 
     fn open_session_draft(&mut self, cx: &mut Context<Self>) {
-        if !self.adapter.draft.can_open(&self.adapter.state, cx) {
+        let draft = &self.adapter.draft;
+        if !draft.can_open(&self.adapter, cx) {
             return;
         }
-        let mut request = self.adapter.draft.request(cx);
+        if self.adapter.uses_rust_core() {
+            let elf = Draft::value(&draft.elf, cx);
+            let (path, request) = match draft.mode {
+                Mode::Live => (
+                    "/api/session/live",
+                    json!({"elf": elf, "target": Draft::value(&draft.target, cx)}),
+                ),
+                Mode::Replay => (
+                    "/api/session/replay",
+                    json!({"elf": elf, "recording": Draft::value(&draft.recording, cx)}),
+                ),
+            };
+            self.adapter.draft.error = None;
+            self.adapter_command(path, request, cx);
+            return;
+        }
+        let mut request = draft.request(cx);
         let data = request.as_object_mut().expect("draft request is an object");
         data.remove("mode");
         if Draft::value(&self.adapter.draft.build, cx).is_empty() {
@@ -984,6 +1041,11 @@ impl ThreadsApp {
         if !self.adapter.draft.open {
             return;
         }
+        if self.adapter.uses_rust_core() {
+            self.adapter.draft.error = None;
+            cx.notify();
+            return;
+        }
         let build = Draft::value(&self.adapter.draft.build, cx);
         if self.adapter.draft.mode == Mode::Live && build != self.adapter.draft.bound_build {
             self.adapter.draft.bound_build = build;
@@ -1005,6 +1067,9 @@ impl ThreadsApp {
     }
 
     fn schedule_session_build(&mut self, cx: &mut Context<Self>) {
+        if self.adapter.uses_rust_core() {
+            return;
+        }
         let request = self.adapter.draft.request(cx);
         let draft = &mut self.adapter.draft;
         if draft.scheduled_request.as_ref() == Some(&request) {

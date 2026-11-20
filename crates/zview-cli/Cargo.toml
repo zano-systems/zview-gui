@@ -1,0 +1,27 @@
+[package]
+name = "zview-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "zview"
+path = "src/main.rs"
+
+[features]
+probe-rs = ["zview-core/probe-rs"]
+
+[dependencies]
+anyhow = "1"
+async-signal = "0.2"
+futures-lite = "2"
+serde = { version = "1", features = ["derive"] }
+serde_yaml_ng = "0.10"
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+zview-core = { path = "../zview-core" }
+
+[dev-dependencies]
+flate2 = "1"
+tempfile = "3"

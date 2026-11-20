@@ -46,12 +46,19 @@ impl ThreadsApp {
         }
         self.adapter.closing = true;
         self.adapter.connection_task.take();
-        let startup = self.adapter.startup.take();
-        let process = self.adapter.process.take();
-        self.adapter.shutdown = Some(native_adapter::Shutdown::new(startup, process));
+        if let Some(backend) = &self.adapter.rust_core {
+            backend.stop();
+        } else {
+            let startup = self.adapter.startup.take();
+            let process = self.adapter.process.take();
+            self.adapter.shutdown = Some(native_adapter::Shutdown::new(startup, process));
+        }
         cx.spawn(async move |this, cx| {
             loop {
                 let finished = this.update(cx, |app, _| {
+                    if let Some(backend) = &mut app.adapter.rust_core {
+                        return backend.finish_shutdown();
+                    }
                     app.adapter
                         .shutdown
                         .as_ref()
