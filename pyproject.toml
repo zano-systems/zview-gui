@@ -12,7 +12,7 @@ name = "zview-gui"
 version = "0.5.0"
 description = "Browser UI for ZView: live and recorded Zephyr RTOS kernel views"
 readme = "web-ui/PYPI.md"
-license = "Apache-2.0"
+license = "Apache-2.0 AND OFL-1.1"
 license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.10"
 authors = [{ name = "Zano Systems" }]
