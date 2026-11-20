@@ -138,10 +138,12 @@ This startup option is for the native-owned adapter and cannot be combined with
 Native starts its own loopback adapter on a free port and shuts it down when
 the window closes. Its terminal retains readiness and session diagnostics
 without browser URL or browser-server instructions.
-Closing the main window quits the application, waits for
-adapter startup if necessary, and requests graceful session cleanup. An owned
-adapter that does not exit within five seconds is terminated and reaped.
-System Quit also waits for owned-process cleanup.
+Closing the main window or choosing **Quit ZView** (Command+Q on macOS,
+Ctrl+Q on Windows and Linux) cancels pending adapter startup and keeps the UI
+responsive while the owned adapter shuts down. An owned adapter that does not
+exit within five seconds is terminated and reaped before ZView quits.
+If the OS initiates termination without going through ZView's Quit command,
+GPUI cannot defer it, so the fallback waits synchronously for cleanup.
 `--python` overrides `ZVIEW_GUI_PYTHON`; otherwise it uses
 `python3`. Missing dependencies or startup failures are reported in the UI.
 

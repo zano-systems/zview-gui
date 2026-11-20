@@ -6,6 +6,19 @@ use gpui_kit::component::TitleBar;
 // Match Kit's native control inset, but keep it outside sidebar sizing.
 const WINDOW_CONTROLS_INSET: Pixels = px(if cfg!(target_os = "macos") { 80. } else { 12. });
 
+actions!(native, [Quit]);
+
+pub(super) fn bind_quit(
+    app: WeakEntity<ThreadsApp>,
+    finish: impl Fn(&mut App) + Clone + 'static,
+    cx: &mut App,
+) {
+    cx.bind_keys([KeyBinding::new("secondary-q", Quit, None)]);
+    cx.on_action(move |_: &Quit, cx| {
+        let _ = app.update(cx, |app, cx| app.close_native_with(finish.clone(), cx));
+    });
+}
+
 impl ThreadsApp {
     pub(super) fn native_titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         TitleBar::new()
@@ -20,6 +33,14 @@ impl ThreadsApp {
 
     /// Keep the event loop alive until startup and owned-process cleanup finish.
     pub(super) fn close_native(&mut self, cx: &mut Context<Self>) {
+        self.close_native_with(|cx| cx.quit(), cx);
+    }
+
+    fn close_native_with(
+        &mut self,
+        finish: impl FnOnce(&mut App) + 'static,
+        cx: &mut Context<Self>,
+    ) {
         if self.adapter.closing {
             return;
         }
@@ -40,11 +61,13 @@ impl ThreadsApp {
                     Ok(true) => break,
                     Err(_) => return,
                     Ok(false) => {
-                        smol::Timer::after(std::time::Duration::from_millis(25)).await;
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(25))
+                            .await;
                     }
                 }
             }
-            cx.update(|cx| cx.quit());
+            cx.update(finish);
         })
         .detach();
     }

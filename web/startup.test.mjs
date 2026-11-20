@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { initializeBrowser } from "./startup.mjs";
 
-function host() {
+function host(initialReducedMotion = false) {
   const calls = [];
   let motionChanged;
   const uiFont = new Uint8Array([1]);
@@ -16,7 +16,7 @@ function host() {
     matchMedia: query => {
       calls.push(query);
       return {
-        matches: false,
+        matches: initialReducedMotion,
         addEventListener: (event, callback) => {
           calls.push(["listen", event]);
           motionChanged = callback;
@@ -33,23 +33,25 @@ function host() {
   return { options, calls, uiFont, monoFont, motionChanged: value => motionChanged({ matches: value }) };
 }
 
-test("starts the shared UI then always connects the adapter, fetching only fonts", async () => {
-  const { options, calls, motionChanged, uiFont, monoFont } = host();
-  await initializeBrowser(options);
-  assert.deepEqual(calls.filter(call => typeof call === "string" && call.startsWith("./")), [
-    "./fonts/IBMPlexSans-Regular.source.ttf",
-    "./fonts/JetBrainsMono-Regular.source.ttf",
-  ]);
-  assert.deepEqual(calls.slice(-5), [
-    ["start", uiFont, monoFont], "(prefers-reduced-motion: reduce)",
-    ["motion", false], ["listen", "change"], "connect",
-  ]);
-  assert.equal(options.status.hidden, true);
-  motionChanged(true);
-  assert.deepEqual(calls.at(-1), ["motion", true]);
-  motionChanged(false);
-  assert.deepEqual(calls.at(-1), ["motion", false]);
-});
+for (const initialReducedMotion of [false, true]) {
+  test(`starts the shared UI and connects with reduced motion ${initialReducedMotion}`, async () => {
+    const { options, calls, motionChanged, uiFont, monoFont } = host(initialReducedMotion);
+    await initializeBrowser(options);
+    assert.deepEqual(calls.filter(call => typeof call === "string" && call.startsWith("./")), [
+      "./fonts/IBMPlexSans-Regular.source.ttf",
+      "./fonts/JetBrainsMono-Regular.source.ttf",
+    ]);
+    assert.deepEqual(calls.slice(-5), [
+      ["start", uiFont, monoFont], "(prefers-reduced-motion: reduce)",
+      ["motion", initialReducedMotion], ["listen", "change"], "connect",
+    ]);
+    assert.equal(options.status.hidden, true);
+    motionChanged(!initialReducedMotion);
+    assert.deepEqual(calls.at(-1), ["motion", !initialReducedMotion]);
+    motionChanged(initialReducedMotion);
+    assert.deepEqual(calls.at(-1), ["motion", initialReducedMotion]);
+  });
+}
 
 test("waits for WASM initialization before starting the window", async () => {
   const { options, calls } = host();

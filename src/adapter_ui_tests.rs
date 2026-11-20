@@ -57,6 +57,49 @@ fn native_session_controls_install_replay_frames_and_reject_stale_events(cx: &mu
 }
 
 #[gpui_kit::test]
+fn reading_without_a_first_frame_shows_mode_specific_sidebar_status(cx: &mut TestAppContext) {
+    let (app, mut cx) = crate::tests::setup(cx);
+    for (source, status, live) in [
+        (
+            json!({"mode": "replay", "recording": "capture.ndjson.gz"}),
+            "session-status-text:REPLAY · Decoding",
+            false,
+        ),
+        (
+            json!({"mode": "live", "configuration": {"build_dir": "build"}, "runner": "jlink"}),
+            "session-status-text:LIVE · Waiting",
+            true,
+        ),
+    ] {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.adapter.available = true;
+                app.adapter.state = crate::adapter_protocol::ClientState::default();
+                app.adapter
+                    .state
+                    .accept(
+                        serde_json::from_value(json!({
+                            "version": crate::adapter_protocol::PROTOCOL_VERSION,
+                            "type": "snapshot", "sequence": 0, "session_id": "first-frame",
+                            "data": {
+                                "id": "first-frame", "source": source,
+                                "elf": "zephyr.elf", "status": "reading", "frames_received": 0,
+                                "last_frame": null, "last_notice": null, "error": null
+                            }
+                        }))
+                        .unwrap(),
+                    )
+                    .unwrap();
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert!(cx.debug_bounds(status).is_some(), "{status}");
+        assert_eq!(cx.debug_bounds("session-waiting-detail").is_some(), live);
+    }
+}
+
+#[gpui_kit::test]
 fn session_status_and_read_warnings_remain_readable_beside_actions(cx: &mut TestAppContext) {
     let (app, mut cx) = crate::tests::setup(cx);
     let snapshot = json!({
