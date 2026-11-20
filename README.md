@@ -5,16 +5,53 @@ activity, kernel objects, and memory usage, built in Rust with
 [GPUI Kit](https://gpui-kit.com/).
 
 ZView GUI is a companion frontend to [ZView](https://github.com/rodrigopex/zview),
-which provides data acquisition and decoding. Native and browser sessions both
-require the Python adapter for Live acquisition and Replay.
+which provides data acquisition and decoding. The browser UI is distributed as
+[`zview-gui` on PyPI](https://pypi.org/project/zview-gui/). The native UI is
+available from source for development; no native binaries are distributed.
 
 ## Status
 
 **Under construction.** The application and its documentation are experimental
-and may change. The project is not open for contributions at this stage.
+and may change. Share feedback about the browser UI or report bugs in the
+[issue tracker](https://github.com/zano-systems/zview-gui/issues). The project is
+not open for code contributions at this stage.
 The local Python web adapter supports Live connections and Replay. Live hardware
 support requires the appropriate probe tools/drivers and hardware validation;
 MCP integration is not implemented.
+
+## Quick start
+
+Install `zview-gui` from PyPI to run the browser UI. The package includes the
+local Python adapter and prebuilt browser UI, so no checkout, Rust toolchain,
+WASM build, or west workspace is required. Use Python 3.10 or newer; Python 3.12
+is tested in release CI.
+
+```sh
+python3 -m venv .venv-zview
+.venv-zview/bin/python -m pip install zview-gui
+.venv-zview/bin/zview-gui
+```
+
+On Windows, create the environment with `py -m venv .venv-zview` and use
+`.venv-zview\Scripts\python.exe` and `.venv-zview\Scripts\zview-gui.exe` in the
+last two commands.
+
+The command prints a local URL and opens the browser. Keep the terminal running;
+press **Ctrl+C** to stop the adapter. Use a desktop browser with WebGPU or WebGL2
+and a viewport of at least **1000 × 680**.
+
+- **Replay:** Open **Configure session** and select a recording and its matching
+  ELF or build. The adapter reads files under the working directory by default;
+  pass `--data-root /path/to/recordings` to choose another directory. The
+  [benchmark guide](test-data/zview-bench-60s/README.md) provides a recording
+  and matching ELF to try.
+- **Live:** Configure the connection in the sidebar, or launch with
+  `zview-gui -d path/to/build` to connect at startup. Use matching firmware
+  already running on the target and the appropriate probe tools and drivers.
+  Connecting does not flash firmware.
+
+If you already use a Zephyr workspace, see the optional
+[west integration](#west-integration-west-zview-gui).
 
 ## Current capabilities
 
@@ -68,44 +105,177 @@ MCP integration is not implemented.
   gaps remain gaps; dense views preserve extrema using pixel envelopes.
   A chart-memory safeguard explicitly reports any shortened retention.
 
-## Quick start
+Native and web share a 32-point application header, separate from navigation.
+Native integrates the OS window controls and dragging; web does not draw them.
+The sidebar toggle stays fixed at the left, with About and Help & shortcuts at
+the right of the leading section. The separator aligns with the sidebar edge
+when expanded. When collapsed, the leading section fits those controls, followed
+by the separator and breadcrumbs; the sidebar itself becomes a narrow icon rail.
+Header sizing lives in `src/header.rs`. Native window-control spacing does not
+widen the sidebar.
 
-Install Rust, [just](https://just.systems/), and the
-[GPUI Kit native prerequisites](https://gpui-kit.com/docs/installation).
-Install the Python adapter as described in [Native Live and Replay](#native-live-and-replay).
-From the repository root, start the adapter-backed native application:
+Kernel objects navigation starts expanded on both hosts and can be collapsed
+manually. Fixed "Backed by Zano" attribution sits above the session controls in
+the shared sidebar footer and links to https://zano.systems/ (the logo is the
+link when collapsed).
+All session actions use the shared sidebar controls, with the collapsed session
+icon centered on the navigation icons. Activating it by mouse or keyboard expands
+the sidebar and focuses the session controls.
 
-```sh
-just gui
+## West integration (`west zview-gui`)
+
+In a Zephyr workspace, ZView GUI is a west module whose `west zview-gui` command
+starts the [Python session adapter](web-ui/README.md), connects Live to the
+target described by the build directory, and opens the browser. The adapter
+and the prebuilt browser UI ship together as the
+[`zview-gui` package on PyPI](https://pypi.org/project/zview-gui/), which pins
+the ZView release it is tested with (`zview==0.28.1`). The firmware side still
+needs ZView's own west module: it provides the `zview` snippet that configures
+the build (`-S zview`) and the `west zview` command. Keep it at the same
+release; the adapter's Python code always comes from the PyPI pin, not from
+this checkout. Add both modules to your manifest:
+
+```yaml
+manifest:
+  remotes:
+    - name: wkhadgar
+      url-base: https://github.com/wkhadgar
+    - name: zano-systems
+      url-base: https://github.com/zano-systems
+  projects:
+    - name: zview
+      remote: wkhadgar
+      revision: v0.28.1  # the release zview-gui pins
+      path: modules/tools/zview
+      west-commands: scripts/west-commands.yml
+    - name: zview-gui
+      remote: zano-systems
+      revision: main
+      path: modules/tools/zview-gui
+      west-commands: scripts/west-commands.yml
 ```
 
-For the browser, use the same Python 3.12 adapter environment and set up
-the WASM build tools once. Then build and launch this checkout through the adapter:
+Use a GUI module revision whose pinned package is published on PyPI. If `main`
+pins an unreleased version, select a published release tag instead. Run this
+setup once, and again after `west update` moves the module to a new release:
 
 ```sh
-just web-setup
-just web-gui --python .venv-web/bin/python
+west update zview zview-gui
+west packages pip --install   # installs zview-gui==<module version> and ZView
 ```
 
-Both applications start with an empty adapter session. Use Configure session
-to connect Live or replay a ZView recording with its matching ELF/build.
-The [benchmark guide](test-data/zview-bench-60s/README.md) provides a real
-recording and matching ELF for Replay, with provenance and checksums.
+No Rust or WASM toolchain is needed. `west zview-gui` runs the installed
+package and warns when it is not the release the module revision expects.
+Contributors who change the UI build the site from the module's sources
+instead, with the WASM tools installed once:
 
-`just gui` and bare `cargo run` require an adapter-backed native session.
-`just gui --python /path/to/python` selects the adapter interpreter explicitly.
-Native typography is unchanged; the browser bundles IBM Plex Sans and JetBrains Mono.
+```sh
+(cd modules/tools/zview-gui && just web-setup)
+west zview-gui --rebuild
+```
+
+Build with the ZView snippet and launch:
+
+```sh
+west build -b <board> app -S zview
+west zview-gui                  # build dir from build.dir-fmt, cwd, or ./build
+west zview-gui -d other-build --no-open --port 0
+west zview-gui -r gdb -t 127.0.0.1:1234   # e.g. QEMU's gdbstub (no runners.yaml)
+```
+
+Runner, target and probe clock come from the build's `runners.yaml`
+(`debug-runner` before `flash-runner`). Override them with `-r/-t/--frequency`,
+the ELF with `-e`, or the sysbuild image with `--domain`. The adapter may only
+read paths under its data root. That root is the west workspace when it holds
+the build and the application sources, otherwise their nearest common directory;
+`--data-root` overrides it. If auto-connect fails, the error is printed and the
+server keeps running so you can fix the settings in **Configure…**. `--rebuild`
+recompiles the WASM site incrementally into the module's `target/web` and serves
+that instead of the packaged site.
+It listens on `127.0.0.1:8765`, or on a free port (printed) when 8765 is taken;
+an explicit `--port` that is taken is an error.
+**Ctrl+C** disconnects the probe and stops the server.
+While it runs, the terminal reports Live status changes (reading, lost, failed,
+stopped) and read notices, coloured by level, with the page URL highlighted.
+Set `NO_COLOR=1`, or `west config color.ui false`, for plain output.
+Heap fragmentation maps are captured only while a heap's details are open; by
+default they follow the polling period (`--period`, 0.1 s) with no cooldown, so
+the fragmentation ratio updates as often as the heap statistics. Each map walks
+every heap chunk over the probe, so it lowers the overall frame rate while that
+view is open; `--heap-period`/`--heap-cooldown` throttle it. ZView's warnings,
+such as resynced broken frames, go to its log file (printed at startup).
+
+## Upgrading from 0.4.x
+
+In 0.5, both UIs require the Python adapter for Live and Replay. Direct JSON
+imports and startup with a bundled sample are no longer supported. To replay a
+ZView recording, select it and its matching ELF or build in **Configure session**.
+For source builds, use `just web-gui` or `just gui` instead of `just web-ui` or
+`just ui`. The native executable is now named `zview-gui-rs`.
+
+## Development
+
+### Browser builds
+
+To install the **current checkout** like a release, but labelled as a development
+version, use a dedicated Python 3.12 virtual environment:
+
+```sh
+just web-setup                          # once, for the WASM build tools
+python3.12 -m venv .venv-web
+just web-install-dev .venv-web/bin/python
+.venv-web/bin/zview-gui --version         # zview-gui 0.5.0.dev0
+.venv-web/bin/zview-gui -d path/to/build
+```
+
+This rebuilds the optimized browser UI and pip-installs a regular wheel with
+the same dependencies, entry point and bundled site as a release. The version
+is the checkout's release version plus `.dev0` (pip's spelling of `-dev`).
+It does not publish to PyPI or change tracked version files. Re-running replaces
+the previous development install and reinstalls its dependencies; use a dedicated
+environment. The wheel is retained in `target/dev-dist/`.
+With a virtual environment activated, `just web-install-dev` uses its `python3`.
+On Windows, pass `.venv-web/Scripts/python.exe`.
+The west module still expects its release pin and may warn about the dev version;
+`west packages pip --install` restores the pinned release.
+
+#### Browser startup and hosting
+
+`just web-gui` builds this checkout's assets and launches the installed adapter
+with `--site target/web`. Select its interpreter with `--python` or
+`ZVIEW_GUI_PYTHON`; otherwise it uses the launcher's Python. Adapter options
+such as `--data-root`, `--port` and `--no-open` are forwarded. Use `--skip-build`
+when the current browser build is already complete.
+
+GPUI prefers WebGPU and falls back to WebGL2. Browser/driver support and
+background-tab playback timing can differ from native. A missing or disconnected
+adapter is reported in the UI and retried; the session controls remain accessible.
+
+GPUI Kit 0.7.3's web dependencies require nightly Rust. `web-setup` installs
+the WASM target and matching wasm-bindgen CLI under `target/tools`; native
+builds remain on stable Rust. Set `ZVIEW_WEB_TOOLCHAIN` to override the web
+toolchain. The first build downloads pinned, checksum-verified fonts and Rust
+dependencies. Node/npm is not needed to launch, but the Python adapter is required.
+
+```sh
+just web-build
+```
+
+Serve `target/web/`, including `pkg/`, `startup.mjs` and `fonts/`, through the
+Python adapter using `--site target/web`. Keep `fonts/OFL.txt` with the
+distribution. Browser assets do not contain a session or sample dataset.
 
 ### Native Live and Replay
 
-The native executable is named `zview-gui-rs`. `just gui` and `cargo run`
-launch it; to select it explicitly, use `cargo run --bin zview-gui-rs`.
-The Python/browser command remains `zview-gui`.
+Native is a development workflow, not a distributed install. From the
+repository root, use `just gui` or `cargo run` to launch `zview-gui-rs`.
+Install Rust and the
+[GPUI Kit native prerequisites](https://gpui-kit.com/docs/installation),
+plus [just](https://just.systems/) if using `just gui`.
 
-Native and web share the same Rust/GPUI UI foundation, Python adapter, session
-configuration, Live/Replay controls and streaming protocol. Install the adapter
-from this checkout into a separate Python 3.12 environment; no WASM build or
-browser assets are needed for native:
+Native and web share the same Rust/GPUI UI, Python adapter and session controls.
+Install the adapter from this checkout into a separate Python 3.12 environment;
+no WASM build or browser assets are needed for native:
 
 ```sh
 python3.12 -m venv .venv-web
@@ -159,171 +329,6 @@ cargo run -- --adapter http://127.0.0.1:8765
 Closing native never stops an adapter it attached to. Native and browser clients
 share the existing controlling-client rule: one client controls Live view
 selection at a time. Remote adapter connections are not supported.
-
-Native and web use the same adapter-backed Live and Replay workflows. Replay
-reads recordings generated by ZView with their matching ELF or build.
-
-Native and web share a 32-point application header, separate from navigation.
-Native integrates the OS window controls and dragging; web does not draw them.
-The sidebar toggle stays fixed at the left, with About and Help & shortcuts at
-the right of the leading section. The separator aligns with the sidebar edge
-when expanded. When collapsed, the leading section fits those controls, followed
-by the separator and breadcrumbs; the sidebar itself becomes a narrow icon rail.
-Header sizing lives in `src/header.rs`. Native window-control spacing does not
-widen the sidebar.
-
-Kernel objects navigation starts expanded on both hosts and can be collapsed
-manually. Fixed "Backed by Zano" attribution sits above the session controls in
-the shared sidebar footer and links to https://zano.systems/ (the logo is the
-link when collapsed).
-All session actions use the shared sidebar controls, with the collapsed session
-icon centered on the navigation icons. Activating it by mouse or keyboard expands
-the sidebar and focuses the session controls.
-
-## West integration (`west zview-gui`)
-
-In a Zephyr workspace, ZView GUI is a west module whose `west zview-gui` command
-starts the [Python session adapter](web-ui/README.md), connects Live to the
-target described by the build directory, and opens the browser. The adapter
-and the prebuilt browser UI ship together as the
-[`zview-gui` package on PyPI](https://pypi.org/project/zview-gui/), which pins
-the ZView release it is tested with (`zview==0.28.1`). The firmware side still
-needs ZView's own west module: it provides the `zview` snippet that configures
-the build (`-S zview`) and the `west zview` command. Keep it at the same
-release; the adapter's Python code always comes from the PyPI pin, not from
-this checkout. Add both modules to your manifest:
-
-```yaml
-manifest:
-  remotes:
-    - name: wkhadgar
-      url-base: https://github.com/wkhadgar
-    - name: zano-systems
-      url-base: https://github.com/zano-systems
-  projects:
-    - name: zview
-      remote: wkhadgar
-      revision: v0.28.1  # the release zview-gui pins
-      path: modules/tools/zview
-      west-commands: scripts/west-commands.yml
-    - name: zview-gui
-      remote: zano-systems
-      revision: main
-      path: modules/tools/zview-gui
-      west-commands: scripts/west-commands.yml
-```
-
-One-time setup, and again after `west update` moves the module to a new
-release:
-
-```sh
-west update zview zview-gui
-west packages pip --install   # installs zview-gui==<module version> and ZView
-```
-
-No Rust or WASM toolchain is needed. `west zview-gui` runs the installed
-package and warns when it is not the release the module revision expects.
-Contributors who change the UI build the site from the module's sources
-instead, with the WASM tools installed once:
-
-```sh
-(cd modules/tools/zview-gui && just web-setup)
-west zview-gui --rebuild
-```
-
-Build with the ZView snippet and launch:
-
-```sh
-west build -b <board> app -S zview
-west zview-gui                  # build dir from build.dir-fmt, cwd, or ./build
-west zview-gui -d other-build --no-open --port 0
-west zview-gui -r gdb -t 127.0.0.1:1234   # e.g. QEMU's gdbstub (no runners.yaml)
-```
-
-Runner, target and probe clock come from the build's `runners.yaml`
-(`debug-runner` before `flash-runner`). Override them with `-r/-t/--frequency`,
-the ELF with `-e`, or the sysbuild image with `--domain`. The adapter may only
-read paths under its data root. That root is the west workspace when it holds
-the build and the application sources, otherwise their nearest common directory;
-`--data-root` overrides it. If auto-connect fails, the error is printed and the
-server keeps running so you can fix the settings in **Configure…**. `--rebuild`
-recompiles the WASM site incrementally into the module's `target/web` and serves
-that instead of the packaged site.
-It listens on `127.0.0.1:8765`, or on a free port (printed) when 8765 is taken;
-an explicit `--port` that is taken is an error.
-**Ctrl+C** disconnects the probe and stops the server.
-While it runs, the terminal reports Live status changes (reading, lost, failed,
-stopped) and read notices, coloured by level, with the page URL highlighted.
-Set `NO_COLOR=1`, or `west config color.ui false`, for plain output.
-Heap fragmentation maps are captured only while a heap's details are open; by
-default they follow the polling period (`--period`, 0.1 s) with no cooldown, so
-the fragmentation ratio updates as often as the heap statistics. Each map walks
-every heap chunk over the probe, so it lowers the overall frame rate while that
-view is open; `--heap-period`/`--heap-cooldown` throttle it. ZView's warnings,
-such as resynced broken frames, go to its log file (printed at startup).
-
-Outside west, the same package provides a `zview-gui` command with the same
-options. It takes the build directory explicitly, and without `-d` it serves
-Replay only, from `--data-root`:
-
-```sh
-pip install zview-gui
-zview-gui -d path/to/build
-zview-gui --data-root path/to/recordings
-```
-
-To install the **current checkout** like a release, but labelled as a development
-version, use a dedicated Python 3.12 virtual environment:
-
-```sh
-just web-setup                          # once, for the WASM build tools
-python3.12 -m venv .venv-web
-just web-install-dev .venv-web/bin/python
-.venv-web/bin/zview-gui --version         # zview-gui 0.4.1.dev0
-.venv-web/bin/zview-gui -d path/to/build
-```
-
-This rebuilds the optimized browser UI and pip-installs a regular wheel with
-the same dependencies, entry point and bundled site as a release. The version
-is the checkout's release version plus `.dev0` (pip's spelling of `-dev`).
-It does not publish to PyPI or change tracked version files. Re-running replaces
-the previous development install and reinstalls its dependencies; use a dedicated
-environment. The wheel is retained in `target/dev-dist/`.
-With a virtual environment activated, `just web-install-dev` uses its `python3`.
-On Windows, pass `.venv-web/Scripts/python.exe`.
-The west module still expects its release pin and may warn about the dev version;
-`west packages pip --install` restores the pinned release.
-
-### Browser startup and hosting
-
-`just web-gui` builds this checkout's assets and launches the installed adapter
-with `--site target/web`. Select its interpreter with `--python` or
-`ZVIEW_GUI_PYTHON`; otherwise it uses the launcher's Python. Adapter options
-such as `--data-root`, `--port` and `--no-open` are forwarded. Use `--skip-build`
-when the current browser build is already complete.
-
-The adapter prints a local URL and opens the browser. Keep the terminal running;
-**Ctrl+C** stops the adapter. Recordings and ELF/build paths are local to the
-adapter and constrained by its data root. A missing/disconnected adapter is
-reported in the UI and retried; the session controls remain accessible.
-
-Use a desktop-sized viewport of at least **1000 × 680**. GPUI prefers WebGPU
-and falls back to WebGL2; browser/driver support and background-tab playback
-timing can differ from native. This is not a mobile layout.
-
-GPUI Kit 0.7.3's web dependencies require nightly Rust. `web-setup` installs
-the WASM target and matching wasm-bindgen CLI under `target/tools`; native
-builds remain on stable Rust. Set `ZVIEW_WEB_TOOLCHAIN` to override the web
-toolchain. The first build downloads pinned, checksum-verified fonts and Rust
-dependencies. Node/npm is not needed to launch, but the Python adapter is required.
-
-```sh
-just web-build
-```
-
-Serve `target/web/`, including `pkg/`, `startup.mjs` and `fonts/`, through the
-Python adapter using `--site target/web`. Keep `fonts/OFL.txt` with the
-distribution. Browser assets do not contain a session or sample dataset.
 
 ## Validation
 
