@@ -106,7 +106,7 @@ impl ThreadsApp {
                                     this.update_in(cx, |app, window, cx| {
                                         app.accept_adapter(message, window, cx)?;
                                         match take_live_start(&mut live_build, &app.adapter.state) {
-                                            Ok(Some(body)) => app.adapter_command("/api/session/live", body, cx),
+                                            Ok(Some(body)) => app.adapter_command("/api/session/live", body, None, cx),
                                             Ok(None) => {}
                                             Err(error) => {
                                                 eprintln!("{error}");
