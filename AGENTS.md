@@ -22,8 +22,9 @@ to confirm exact dependency pins and checks; do not duplicate changing versions 
   object semantics. `src/thread_sort.rs` orders visible thread rows.
   Keep rendering and keyboard navigation on the same ordering.
 - `src/adapter_protocol.rs` defines the typed wire contract and pure client state.
-  `src/web_adapter.rs` owns browser HTTP/WebSocket integration;
-  `src/web_session.rs` renders the session controls/form and
+  `src/adapter_ui.rs` owns shared adapter controls and platform-specific transport integration;
+  `src/session_form.rs` renders the session controls/form,
+  `src/usage_control.rs` manages usage controls, and
   `src/session_settings.rs` contains testable settings/discovery value rules.
 - `web-ui/zview_gui/` is the Python adapter: `server.py` exposes HTTP/WebSocket
   endpoints, `session.py` manages acquisition/replay, and the build, view-selection

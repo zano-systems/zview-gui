@@ -1,4 +1,5 @@
 pub mod adapter_protocol;
+mod adapter_ui;
 mod app_assets;
 mod chart_zoom;
 mod header;
@@ -28,7 +29,6 @@ mod time_series_chart;
 mod wait_queue;
 #[cfg(target_family = "wasm")]
 mod web;
-mod web_adapter;
 mod workq_activity;
 mod workq_detail;
 mod zoom_strip;
@@ -49,7 +49,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use model::{Frame, ThreadKey, percent, percentage};
-use std::path::PathBuf;
+use std::{cell::Cell, path::PathBuf, rc::Rc};
 
 actions!(
     threads,
@@ -199,6 +199,15 @@ fn object_count(
         .sum()
 }
 
+/// Bounds recorded during UI layout for browser inspection.
+#[derive(Default)]
+struct NavigationBounds {
+    sidebar_toggle: Rc<Cell<Bounds<Pixels>>>,
+    backing: Rc<Cell<Bounds<Pixels>>>,
+    about: Rc<Cell<Bounds<Pixels>>>,
+    help: Rc<Cell<Bounds<Pixels>>>,
+}
+
 struct ThreadsApp {
     frames: Vec<Frame>,
     frame: usize,
@@ -218,6 +227,7 @@ struct ThreadsApp {
     table_focus: FocusHandle,
     detail_focus: FocusHandle,
     backing_focus: FocusHandle,
+    navigation_bounds: NavigationBounds,
     thread_rows_scroll: ScrollHandle,
     thread_columns_scroll: ScrollHandle,
     object_rows_scroll: ScrollHandle,
@@ -229,7 +239,7 @@ struct ThreadsApp {
     object_search: Entity<InputState>,
     object_kind: Option<kernel_model::Kind>,
     _object_search_subscription: Subscription,
-    adapter: web_adapter::Controls,
+    adapter: adapter_ui::Controls,
 }
 
 impl ThreadsApp {
@@ -307,6 +317,7 @@ impl ThreadsApp {
             table_focus: cx.focus_handle(),
             detail_focus: cx.focus_handle(),
             backing_focus: cx.focus_handle().tab_stop(true),
+            navigation_bounds: NavigationBounds::default(),
             thread_rows_scroll: ScrollHandle::new(),
             thread_columns_scroll: ScrollHandle::new(),
             object_rows_scroll: ScrollHandle::new(),
@@ -318,7 +329,7 @@ impl ThreadsApp {
             object_search,
             object_kind: None,
             _object_search_subscription: object_search_subscription,
-            adapter: web_adapter::Controls::new(window, cx),
+            adapter: adapter_ui::Controls::new(window, cx),
         };
         if app.frames[0].is_live {
             app.live_history.record(&app.frames[0], true);
@@ -765,7 +776,7 @@ impl ThreadsApp {
             })
     }
 
-    fn uses_web_adapter(&self) -> bool {
+    fn adapter_available(&self) -> bool {
         self.adapter.available
     }
 
@@ -787,7 +798,7 @@ impl ThreadsApp {
     }
 
     fn sidebar_width(&self) -> Pixels {
-        px(if self.uses_web_adapter() { 300. } else { 230. })
+        px(if self.adapter_available() { 300. } else { 230. })
     }
 
     fn navigation_width(&self) -> Pixels {
@@ -928,7 +939,7 @@ impl ThreadsApp {
                     // Kit supplies the rail's outer inset. Do not add another
                     // inset around this icon, or it shifts off the menu center.
                     .when(self.collapsed, |el| el.p_0().flex().justify_center())
-                    .when(self.uses_web_adapter() && !self.collapsed, |el| {
+                    .when(self.adapter_available() && !self.collapsed, |el| {
                         // Sidebar's footer slot adds 12 px at each side and below.
                         // Extend the session section through that navigation inset.
                         el.w(width)
@@ -944,7 +955,7 @@ impl ThreadsApp {
                     .child(help::sidebar_backing(
                         self.collapsed,
                         &self.backing_focus,
-                        self.adapter.backing_bounds.clone(),
+                        self.navigation_bounds.backing.clone(),
                     ))
                     .children(self.adapter_session_controls(_window, cx)),
             )
@@ -1428,10 +1439,13 @@ impl Render for ThreadsApp {
                                 .children(self.cpu_averaging_controls(cx)),
                         )
                     })
-                    .when_some(self.error.clone(), |el, error| {
-                        el.child(div().p_3().flex_shrink_0().rounded_md().bg(rgb(0x492c3c))
-                            .child(layout::wrapped_note("session-error", error, false)))
-                    })
+                    .children([
+                        ("session-error", self.error.as_deref()),
+                        ("session-command-error", self.adapter_command_error()),
+                    ].into_iter().filter_map(|(id, error)| error.map(|error| {
+                        div().p_3().flex_shrink_0().rounded_md().bg(rgb(0x492c3c))
+                            .child(layout::wrapped_note(id, error.to_owned(), false))
+                    })))
                     .children(self.adapter_display_notice())
                     .when(live_loading && self.screen != Screen::KernelObjects, |el| {
                         el.child(div().flex_1().min_h_0().p_4()

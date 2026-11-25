@@ -32,8 +32,8 @@ impl ThreadsApp {
                     )
                     .child(div().w_0().flex_1())
                     .child(help::header_actions(
-                        self.adapter.about_bounds.clone(),
-                        self.adapter.help_bounds.clone(),
+                        self.navigation_bounds.about.clone(),
+                        self.navigation_bounds.help.clone(),
                     ))
                     .child(
                         div()
@@ -64,7 +64,7 @@ impl ThreadsApp {
         } else {
             "Hide sidebar"
         };
-        let bounds = self.adapter.sidebar_toggle_bounds.clone();
+        let bounds = self.navigation_bounds.sidebar_toggle.clone();
         div()
             .id("header-sidebar-toggle")
             .debug_selector(|| "header-sidebar-toggle".into())

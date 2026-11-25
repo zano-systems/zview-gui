@@ -753,12 +753,23 @@ async def check_live(page, live, screenshot, sockets, dialogs):
         await edit_usage("")
         await wait_state(page, lambda s: s["usage_window"] == 23 and s["usage_input"] == "23",
                          "empty input restores applied value")
+        error = "Controlled CPU-setting failure"
+
         async def reject_usage(route):
-            await route.fulfill(status=400, json={"error": "Controlled CPU-setting failure"})
+            await route.fulfill(status=400, json={"error": error})
+
         await page.route("**/api/session/usage-window", reject_usage, times=1)
-        await edit_usage("19")
-        await wait_state(page, lambda s: s["error"] == "Controlled CPU-setting failure"
-                         and s["usage_input"] == "23", "failed edit restores applied value")
+        await edit_usage("32")
+        rejected = await wait_state(page, lambda s: s["error"] == error
+                                    and s["usage_input"] == "23", "failed edit restores applied value")
+        assert rejected["usage_window"] == 23 and not rejected["modal_open"], rejected
+        # The worker is paused. Release a frame only after Rust handles the HTTP
+        # rejection, and observe the frame independently of the error assertion.
+        live.resume.set()
+        after_frame = await wait_state(page, lambda s: s["frames_received"] > rejected["frames_received"],
+                                       "Live frame after CPU-setting failure")
+        assert after_frame["error"] == error, after_frame
+        assert after_frame["usage_window"] == 23 and after_frame["usage_input"] == "23", after_frame
         await edit_usage("32")
         await wait_state(page, lambda s: s["usage_window"] == 32 and s["error"] is None,
                          "number-input recovery after request error")
