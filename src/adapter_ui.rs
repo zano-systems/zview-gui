@@ -205,6 +205,7 @@ impl ThreadsApp {
             self.adapter_command(
                 "/api/session/usage-window",
                 json!({"session_id": session.id, "client_id": client_id, "polls": polls}),
+                None,
                 cx,
             );
         }
@@ -438,7 +439,12 @@ impl ThreadsApp {
         if self.adapter.state.can_stop()
             && let Some(session) = &self.adapter.state.session
         {
-            self.adapter_command("/api/session/stop", json!({"session_id": session.id}), cx);
+            self.adapter_command(
+                "/api/session/stop",
+                json!({"session_id": session.id}),
+                None,
+                cx,
+            );
         }
     }
 
@@ -449,6 +455,7 @@ impl ThreadsApp {
             self.adapter_command(
                 "/api/session/reconnect",
                 json!({"session_id": session.id}),
+                None,
                 cx,
             );
         }
@@ -461,7 +468,11 @@ impl ThreadsApp {
             .map(|(_, error)| error.as_str())
     }
 
-    fn begin_adapter_command(&mut self, path: &'static str) -> CommandAttempt {
+    fn begin_adapter_command(
+        &mut self,
+        path: &'static str,
+        form_generation: Option<u64>,
+    ) -> CommandAttempt {
         self.adapter.state.pending = true;
         self.adapter.command_revision = self.adapter.command_revision.wrapping_add(1);
         if self
@@ -475,14 +486,7 @@ impl ThreadsApp {
         CommandAttempt {
             path,
             revision: self.adapter.command_revision,
-            form_generation: if matches!(
-                path,
-                "/api/session/live" | "/api/session/replay" | "/api/session/reconnect"
-            ) {
-                self.adapter.draft.open_generation()
-            } else {
-                None
-            },
+            form_generation,
         }
     }
 
@@ -490,9 +494,10 @@ impl ThreadsApp {
         &mut self,
         path: &'static str,
         body: serde_json::Value,
+        form_generation: Option<u64>,
         cx: &mut Context<Self>,
     ) {
-        let attempt = self.begin_adapter_command(path);
+        let attempt = self.begin_adapter_command(path, form_generation);
         cx.notify();
         let url = self.adapter_url(path);
         spawn_session_task(cx, async move |mut host| {
@@ -533,13 +538,17 @@ impl ThreadsApp {
         let submitted_form = attempt.form_generation.is_some()
             && attempt.form_generation == self.adapter.draft.open_generation();
         match result {
-            Err(error) if pending => {
+            Err(error) if pending || submitted_form => {
+                // A replacement snapshot ends session ownership, but the
+                // submitting form still needs the result of its own request.
                 if submitted_form {
                     self.adapter.draft.error = Some(error.clone());
                 }
-                self.adapter.command_failure = Some((attempt.path, error));
-                if attempt.path == "/api/session/usage-window" {
-                    self.adapter.usage.restore(window, cx);
+                if pending {
+                    self.adapter.command_failure = Some((attempt.path, error));
+                    if attempt.path == "/api/session/usage-window" {
+                        self.adapter.usage.restore(window, cx);
+                    }
                 }
             }
             Ok(()) if submitted_form => {
@@ -821,6 +830,7 @@ pub fn adapter_open_replay(recording: &str, elf: &str) -> Result<(), JsValue> {
                 json!({
                     "recording": recording, "elf": elf,
                 }),
+                None,
                 cx,
             );
         }

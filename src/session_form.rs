@@ -956,6 +956,9 @@ impl ThreadsApp {
     }
 
     fn open_session_draft(&mut self, cx: &mut Context<Self>) {
+        let Some(form_generation) = self.adapter.draft.open_generation() else {
+            return;
+        };
         if !self.adapter.draft.can_open(&self.adapter.state, cx) {
             return;
         }
@@ -980,6 +983,7 @@ impl ThreadsApp {
                 "/api/session/replay"
             },
             request,
+            Some(form_generation),
             cx,
         );
     }

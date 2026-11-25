@@ -75,7 +75,7 @@ fn command_error_survives_health_and_is_scoped_to_the_confirmed_session(cx: &mut
     cx.update(|window, cx| {
         app.update(cx, |app, cx| {
             app.accept_adapter(snapshot("first"), window, cx).unwrap();
-            let request = app.begin_adapter_command(usage);
+            let request = app.begin_adapter_command(usage, None);
             app.finish_adapter_command(request, Err("Averaging rejected".into()), window, cx);
             let health = serde_json::from_value(json!({
                 "version": crate::adapter_protocol::PROTOCOL_VERSION,
@@ -92,10 +92,10 @@ fn command_error_survives_health_and_is_scoped_to_the_confirmed_session(cx: &mut
     assert!(cx.debug_bounds("session-command-error").is_some());
     cx.update(|window, cx| {
         app.update(cx, |app, cx| {
-            let retry = app.begin_adapter_command(usage);
+            let retry = app.begin_adapter_command(usage, None);
             assert!(app.adapter_command_error().is_none());
             app.finish_adapter_command(retry, Err("Retry rejected".into()), window, cx);
-            let stop = app.begin_adapter_command("/api/session/stop");
+            let stop = app.begin_adapter_command("/api/session/stop", None);
             assert_eq!(app.adapter_command_error(), Some("Retry rejected"));
             app.accept_adapter(snapshot("second"), window, cx).unwrap();
             assert!(!app.adapter.state.pending);
@@ -104,9 +104,9 @@ fn command_error_survives_health_and_is_scoped_to_the_confirmed_session(cx: &mut
             app.finish_adapter_command(stop, Err("Late stop rejection".into()), window, cx);
             assert!(app.adapter_command_error().is_none());
 
-            let stale = app.begin_adapter_command(usage);
+            let stale = app.begin_adapter_command(usage, None);
             app.accept_adapter(snapshot("third"), window, cx).unwrap();
-            let new_request = app.begin_adapter_command(usage);
+            let new_request = app.begin_adapter_command(usage, None);
             app.finish_adapter_command(stale, Err("Late usage rejection".into()), window, cx);
             assert!(app.adapter.state.pending);
             assert!(app.adapter_command_error().is_none());
@@ -115,6 +115,69 @@ fn command_error_survives_health_and_is_scoped_to_the_confirmed_session(cx: &mut
         window.draw(cx).clear(cx);
     });
     assert!(cx.debug_bounds("session-command-error").is_none());
+}
+
+#[gpui_kit::test]
+fn submitting_form_gets_the_rejection_in_either_snapshot_order(cx: &mut TestAppContext) {
+    for snapshot_first in [false, true] {
+        let (app, mut cx) = crate::tests::setup(cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_session_dialog(window, cx);
+                let owner = app.adapter.draft.open_generation().unwrap();
+                let attempt = app.begin_adapter_command("/api/session/live", Some(owner));
+                let snapshot = serde_json::from_value(json!({
+                    "version": crate::adapter_protocol::PROTOCOL_VERSION,
+                    "type": "snapshot", "sequence": 0, "session_id": "winner",
+                    "data": {
+                        "id": "winner", "elf": "zephyr.elf", "status": "reading",
+                        "frames_received": 0,
+                        "source": {"mode": "live", "configuration": {"build_dir": "build"}, "runner": "jlink"},
+                        "last_frame": null, "last_notice": null, "error": null
+                    }
+                }))
+                .unwrap();
+                let rejection = Err("Stop the current session first.".into());
+                if snapshot_first {
+                    app.accept_adapter(snapshot, window, cx).unwrap();
+                    app.finish_adapter_command(attempt, rejection, window, cx);
+                } else {
+                    app.finish_adapter_command(attempt, rejection, window, cx);
+                    app.accept_adapter(snapshot, window, cx).unwrap();
+                }
+                assert!(app.adapter.draft.open);
+                assert_eq!(
+                    app.adapter.draft.error.as_deref(),
+                    Some("Stop the current session first."),
+                    "snapshot first: {snapshot_first}",
+                );
+                assert!(app.adapter_command_error().is_none());
+            });
+        });
+    }
+}
+
+#[gpui_kit::test]
+fn non_form_open_completions_leave_an_open_draft_untouched(cx: &mut TestAppContext) {
+    for result in [Err("Other recording rejected".into()), Ok(())] {
+        let (app, mut cx) = crate::tests::setup(cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_session_dialog(window, cx);
+                let draft = app.adapter.draft.request(cx);
+                let generation = app.adapter.draft.open_generation();
+                app.adapter.draft.error = Some("Existing form error".into());
+                let attempt = app.begin_adapter_command("/api/session/replay", None);
+                app.finish_adapter_command(attempt, result, window, cx);
+                assert_eq!(app.adapter.draft.open_generation(), generation);
+                assert_eq!(app.adapter.draft.request(cx), draft);
+                assert_eq!(
+                    app.adapter.draft.error.as_deref(),
+                    Some("Existing form error")
+                );
+            });
+        });
+    }
 }
 
 #[gpui_kit::test]
