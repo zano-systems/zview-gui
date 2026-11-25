@@ -12,7 +12,7 @@ impl Draft {
     }
 
     #[cfg(target_family = "wasm")]
-    pub(in crate::web_adapter) fn recording_path(&self, cx: &App) -> String {
+    pub(in crate::adapter_ui) fn recording_path(&self, cx: &App) -> String {
         Self::value(&self.recording, cx)
     }
 }

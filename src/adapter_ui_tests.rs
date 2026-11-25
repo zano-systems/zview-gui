@@ -57,6 +57,67 @@ fn native_session_controls_install_replay_frames_and_reject_stale_events(cx: &mu
 }
 
 #[gpui_kit::test]
+fn command_error_survives_health_and_is_scoped_to_the_confirmed_session(cx: &mut TestAppContext) {
+    let (app, mut cx) = crate::tests::setup(cx);
+    let snapshot = |id| {
+        serde_json::from_value(json!({
+            "version": crate::adapter_protocol::PROTOCOL_VERSION,
+            "type": "snapshot", "sequence": 0, "session_id": id,
+            "data": {
+                "id": id, "elf": "zephyr.elf", "status": "reading", "frames_received": 0,
+                "source": {"mode": "live", "configuration": {"build_dir": "build"}, "runner": "jlink"},
+                "usage_window": 23, "last_frame": null, "last_notice": null, "error": null
+            }
+        }))
+        .unwrap()
+    };
+    let usage = "/api/session/usage-window";
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.accept_adapter(snapshot("first"), window, cx).unwrap();
+            let request = app.begin_adapter_command(usage);
+            app.finish_adapter_command(request, Err("Averaging rejected".into()), window, cx);
+            let health = serde_json::from_value(json!({
+                "version": crate::adapter_protocol::PROTOCOL_VERSION,
+                "type": "health", "sequence": 1, "session_id": "first",
+                "data": {"samples_per_second": 9.8}
+            }))
+            .unwrap();
+            app.accept_adapter(health, window, cx).unwrap();
+            assert_eq!(app.adapter_command_error(), Some("Averaging rejected"));
+            assert!(app.adapter.draft.error.is_none());
+        });
+        window.draw(cx).clear(cx);
+    });
+    assert!(cx.debug_bounds("session-command-error").is_some());
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            let retry = app.begin_adapter_command(usage);
+            assert!(app.adapter_command_error().is_none());
+            app.finish_adapter_command(retry, Err("Retry rejected".into()), window, cx);
+            let stop = app.begin_adapter_command("/api/session/stop");
+            assert_eq!(app.adapter_command_error(), Some("Retry rejected"));
+            app.accept_adapter(snapshot("second"), window, cx).unwrap();
+            assert!(!app.adapter.state.pending);
+            assert!(app.adapter_command_error().is_none());
+
+            app.finish_adapter_command(stop, Err("Late stop rejection".into()), window, cx);
+            assert!(app.adapter_command_error().is_none());
+
+            let stale = app.begin_adapter_command(usage);
+            app.accept_adapter(snapshot("third"), window, cx).unwrap();
+            let new_request = app.begin_adapter_command(usage);
+            app.finish_adapter_command(stale, Err("Late usage rejection".into()), window, cx);
+            assert!(app.adapter.state.pending);
+            assert!(app.adapter_command_error().is_none());
+            app.finish_adapter_command(new_request, Ok(()), window, cx);
+        });
+        window.draw(cx).clear(cx);
+    });
+    assert!(cx.debug_bounds("session-command-error").is_none());
+}
+
+#[gpui_kit::test]
 fn reading_without_a_first_frame_shows_mode_specific_sidebar_status(cx: &mut TestAppContext) {
     let (app, mut cx) = crate::tests::setup(cx);
     for (source, status, live) in [

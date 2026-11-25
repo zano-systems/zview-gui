@@ -28,12 +28,12 @@ extern "C" {
 #[cfg(not(target_family = "wasm"))]
 #[path = "native_session.rs"]
 mod native;
-#[path = "web_session.rs"]
+#[path = "session_form.rs"]
 mod session_ui;
 #[cfg(all(test, not(target_family = "wasm")))]
 #[path = "adapter_ui_tests.rs"]
 mod tests;
-#[path = "web_usage.rs"]
+#[path = "usage_control.rs"]
 mod usage_ui;
 
 async fn adapter_delay(milliseconds: u64) {
@@ -88,9 +88,17 @@ fn spawn_session_task<F: std::future::Future<Output = ()> + 'static>(
 
 struct AcquisitionWarningNotification;
 
+struct CommandAttempt {
+    path: &'static str,
+    revision: u64,
+    form_generation: Option<u64>,
+}
+
 pub(super) struct Controls {
     pub available: bool,
     pub state: ClientState,
+    command_revision: u64,
+    command_failure: Option<(&'static str, String)>,
     displayed: Option<(String, u64)>,
     history_view: Option<LiveView>,
     history_screen: Option<Screen>,
@@ -101,10 +109,6 @@ pub(super) struct Controls {
     action_bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
     panel_bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
     session_toggle_bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
-    pub(super) sidebar_toggle_bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
-    pub(super) backing_bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
-    pub(super) about_bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
-    pub(super) help_bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
     pub(super) session_focus: FocusHandle,
     draft: session_ui::Draft,
     _draft_subscriptions: Vec<Subscription>,
@@ -137,6 +141,8 @@ impl Controls {
         Self {
             available: false,
             state: ClientState::default(),
+            command_revision: 0,
+            command_failure: None,
             displayed: None,
             history_view: None,
             history_screen: None,
@@ -147,10 +153,6 @@ impl Controls {
             action_bounds: Default::default(),
             panel_bounds: Default::default(),
             session_toggle_bounds: Default::default(),
-            sidebar_toggle_bounds: Default::default(),
-            backing_bounds: Default::default(),
-            about_bounds: Default::default(),
-            help_bounds: Default::default(),
             session_focus: cx.focus_handle().tab_stop(true),
             draft,
             _draft_subscriptions: subscriptions,
@@ -452,14 +454,45 @@ impl ThreadsApp {
         }
     }
 
+    pub(super) fn adapter_command_error(&self) -> Option<&str> {
+        self.adapter
+            .command_failure
+            .as_ref()
+            .map(|(_, error)| error.as_str())
+    }
+
+    fn begin_adapter_command(&mut self, path: &'static str) -> CommandAttempt {
+        self.adapter.state.pending = true;
+        self.adapter.command_revision = self.adapter.command_revision.wrapping_add(1);
+        if self
+            .adapter
+            .command_failure
+            .as_ref()
+            .is_some_and(|(failed, _)| *failed == path)
+        {
+            self.adapter.command_failure = None;
+        }
+        CommandAttempt {
+            path,
+            revision: self.adapter.command_revision,
+            form_generation: if matches!(
+                path,
+                "/api/session/live" | "/api/session/replay" | "/api/session/reconnect"
+            ) {
+                self.adapter.draft.open_generation()
+            } else {
+                None
+            },
+        }
+    }
+
     fn adapter_command(
         &mut self,
         path: &'static str,
         body: serde_json::Value,
         cx: &mut Context<Self>,
     ) {
-        self.adapter.state.pending = true;
-        self.error = None;
+        let attempt = self.begin_adapter_command(path);
         cx.notify();
         let url = self.adapter_url(path);
         spawn_session_task(cx, async move |mut host| {
@@ -481,23 +514,44 @@ impl ThreadsApp {
             }
             .await;
             let _ = host.update(|this, window, cx| {
-                this.adapter.state.pending = false;
-                if let Err(error) = result {
-                    this.adapter.draft.error = Some(error.clone());
-                    this.error = Some(error);
-                    if path == "/api/session/usage-window" {
-                        this.adapter.usage.restore(window, cx);
-                    }
-                } else if !matches!(path, "/api/session/stop" | "/api/session/usage-window")
-                    && this.adapter.draft.open
-                {
-                    this.adapter.draft.dismiss();
-                    window.close_dialog(cx);
-                }
-                // HTTP is an acknowledgement; only the stream replaces state.
-                cx.notify();
+                this.finish_adapter_command(attempt, result, window, cx);
             });
         });
+    }
+
+    fn finish_adapter_command(
+        &mut self,
+        attempt: CommandAttempt,
+        result: Result<(), String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.adapter.command_revision != attempt.revision {
+            return;
+        }
+        let pending = std::mem::take(&mut self.adapter.state.pending);
+        let submitted_form = attempt.form_generation.is_some()
+            && attempt.form_generation == self.adapter.draft.open_generation();
+        match result {
+            Err(error) if pending => {
+                if submitted_form {
+                    self.adapter.draft.error = Some(error.clone());
+                }
+                self.adapter.command_failure = Some((attempt.path, error));
+                if attempt.path == "/api/session/usage-window" {
+                    self.adapter.usage.restore(window, cx);
+                }
+            }
+            Ok(()) if submitted_form => {
+                // A successful open may already have installed a replacement
+                // snapshot. The HTTP acknowledgement only closes its own form.
+                self.adapter.draft.dismiss();
+                window.close_dialog(cx);
+            }
+            _ if !pending => return,
+            _ => {}
+        }
+        cx.notify();
     }
 
     fn accept_adapter(
@@ -524,8 +578,16 @@ impl ThreadsApp {
             &message.event,
             Event::Notice { .. } | Event::View(_) | Event::Status(_) | Event::UsageWindow { .. }
         );
+        let replaced = matches!(&message.event, Event::Snapshot(_))
+            && self.adapter.state.session.as_ref().map(|s| &s.id) != message.session_id.as_ref();
         if !self.adapter.state.accept(message)? {
             return Ok(());
+        }
+        if replaced {
+            // HTTP replies for the previous session no longer own the busy
+            // state or the command banner. A same-session snapshot keeps both.
+            self.adapter.state.pending = false;
+            self.adapter.command_failure = None;
         }
         if let Some(notice) = notice {
             window.push_notification(
@@ -810,7 +872,7 @@ pub fn adapter_state() -> Result<String, JsValue> {
             },
             "heap_map_frame": adapter.state.session.as_ref().and_then(|s| s.heap_detail.last_map.as_ref()).map(|m| m.frame_number),
             "heap_map_note": match &this.screen { Screen::Heap(key) => this.live_heap_note(key), _ => None },
-            "error": this.error,
+            "error": this.error.as_deref().or_else(|| this.adapter_command_error()),
             "visible_threads": this.frames[this.frame].visible_threads().len(),
             "cpu": this.frames[this.frame].cpu(),
             "source": this.source,
@@ -853,14 +915,15 @@ pub fn adapter_state() -> Result<String, JsValue> {
             "x": actions.left().as_f32(), "y": actions.top().as_f32(),
             "width": actions.size.width.as_f32(), "height": actions.size.height.as_f32(),
         });
+        let navigation = &this.navigation_bounds;
         for (name, bounds) in [
             ("session_panel_bounds", adapter.panel_bounds.get()),
             ("session_toggle_bounds", adapter.session_toggle_bounds.get()),
             ("session_mode_bounds", adapter.draft.mode_bounds.get()),
-            ("sidebar_toggle_bounds", adapter.sidebar_toggle_bounds.get()),
-            ("backing_bounds", adapter.backing_bounds.get()),
-            ("about_bounds", adapter.about_bounds.get()),
-            ("help_bounds", adapter.help_bounds.get()),
+            ("sidebar_toggle_bounds", navigation.sidebar_toggle.get()),
+            ("backing_bounds", navigation.backing.get()),
+            ("about_bounds", navigation.about.get()),
+            ("help_bounds", navigation.help.get()),
         ] {
             state[name] = json!({
                 "x": bounds.left().as_f32(), "y": bounds.top().as_f32(),

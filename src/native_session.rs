@@ -1,4 +1,4 @@
-//! Native GPUI host for the shared session UI; browser startup stays in web_adapter.
+//! Native GPUI host for the shared session UI; browser startup stays in adapter_ui.
 use super::*;
 
 /// Consume the CLI request only once, after the first valid session snapshot.

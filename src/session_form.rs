@@ -1,5 +1,5 @@
 //! Session configuration stays a draft until an HTTP command is accepted.
-//! This child of web_adapter uses its transport, not a second session owner.
+//! This child of adapter_ui uses its transport, not a second session owner.
 use super::*;
 use crate::adapter_protocol::{
     BuildContext, Connection, Mode, SessionAction, SessionIndicator, Source, session_labels,
@@ -80,6 +80,10 @@ impl Draft {
             self.target.clone(),
             self.clock.clone(),
         ]
+    }
+
+    pub(super) fn open_generation(&self) -> Option<u64> {
+        self.open.then_some(self.generation)
     }
 
     pub fn dismiss(&mut self) {
