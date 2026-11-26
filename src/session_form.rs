@@ -17,7 +17,9 @@ mod picker;
 pub(super) struct Draft {
     pub open: bool,
     pub mode: Mode,
-    pub error: Option<String>,
+    pub(super) preparation_error: Option<String>,
+    submission_error: Option<String>,
+    submission: Option<u64>,
     pub resolved: Option<(serde_json::Value, BuildContext)>,
     generation: u64,
     resolving: bool,
@@ -47,7 +49,9 @@ impl Draft {
         Self {
             open: false,
             mode: Mode::Replay,
-            error: None,
+            preparation_error: None,
+            submission_error: None,
+            submission: None,
             resolved: None,
             generation: 0,
             resolving: false,
@@ -86,6 +90,34 @@ impl Draft {
         self.open.then_some(self.generation)
     }
 
+    pub(super) fn begin_submission(&mut self, generation: Option<u64>, revision: u64) {
+        if generation.is_some() && generation == self.open_generation() {
+            self.submission = Some(revision);
+            self.submission_error = None;
+        }
+    }
+
+    pub(super) fn complete_submission(&mut self, revision: u64, error: Option<&str>) -> bool {
+        if self.submission != Some(revision) {
+            return false;
+        }
+        self.submission = None;
+        self.submission_error = error.map(str::to_owned);
+        true
+    }
+
+    #[cfg(any(test, target_family = "wasm"))]
+    pub(super) fn displayed_error(&self) -> Option<&str> {
+        self.submission_error
+            .as_deref()
+            .or(self.preparation_error.as_deref())
+    }
+
+    pub(super) fn begin_resolution(&mut self) {
+        self.resolving = true;
+        self.preparation_error = None;
+    }
+
     pub fn dismiss(&mut self) {
         self.open = false;
         self.generation = self.generation.wrapping_add(1);
@@ -93,7 +125,9 @@ impl Draft {
         self.resolution_revision = self.resolution_revision.wrapping_add(1);
         self.scheduled_request = None;
         self.resolved = None;
-        self.error = None;
+        self.preparation_error = None;
+        self.submission = None;
+        self.submission_error = None;
         self.picker = None;
         self.picker_revision = self.picker_revision.wrapping_add(1);
     }
@@ -625,7 +659,6 @@ impl ThreadsApp {
         draft.dismiss();
         draft.open = true;
         draft.mode = session.as_ref().map(|s| s.mode()).unwrap_or(Mode::Replay);
-        draft.error = None;
         draft.resolved = None;
         draft.detected = AdvancedValues::default();
         draft.advanced = false;
@@ -763,7 +796,7 @@ impl ThreadsApp {
                         _ => return,
                     };
                     app.adapter.draft.mode = mode;
-                    app.adapter.draft.error = None;
+                    app.adapter.draft.preparation_error = None;
                     app.session_draft_changed(window, cx);
                     cx.stop_propagation();
                     cx.notify();
@@ -775,7 +808,7 @@ impl ThreadsApp {
                 .child(Tab::new().label("Replay").disabled(self.adapter.state.pending || draft.picker.is_some()))
                 .on_click(cx.listener(|app, index: &usize, window, cx| {
                     app.adapter.draft.mode = if *index == 0 { Mode::Live } else { Mode::Replay };
-                    app.adapter.draft.error = None;
+                    app.adapter.draft.preparation_error = None;
                     app.adapter.draft.mode_focus.focus(window, cx);
                     app.session_draft_changed(window, cx);
                     cx.notify();
@@ -817,7 +850,10 @@ impl ThreadsApp {
                     .child(provenance_note(context))
                     .children(context.warnings.iter().enumerate().map(|(i, warning)| layout::note(format!("build-warning-{i}"), warning.clone()))))
             })
-            .when_some(draft.error.clone(), |el, error| el.child(layout::note("session-draft-error", error)))
+            .when_some(draft.submission_error.clone(),
+                |el, error| el.child(layout::note("session-submission-error", error)))
+            .when_some(draft.preparation_error.clone(),
+                |el, error| el.child(layout::note("session-draft-error", error)))
             .when_some(self.adapter.state.session.as_ref().and_then(|s| s.last_notice.clone()),
                 |el, notice| el.child(layout::note("adapter-notice", notice)))
             .when(live && capabilities.is_none(), |el| el.child(layout::note("discovery-pending",
@@ -975,7 +1011,6 @@ impl ThreadsApp {
                 json!(Draft::value(&self.adapter.draft.recording, cx)),
             );
         }
-        self.adapter.draft.error = None;
         self.adapter_command(
             if live {
                 "/api/session/live"
@@ -1022,7 +1057,7 @@ impl ThreadsApp {
         draft.resolution_revision = draft.resolution_revision.wrapping_add(1);
         draft.resolving = false;
         draft.resolved = None;
-        draft.error = None;
+        draft.preparation_error = None;
         // Replay keeps its explicit preview button; live discovery is automatic.
         if draft.mode != Mode::Live || Draft::value(&draft.build, cx).is_empty() {
             return;
@@ -1060,8 +1095,7 @@ impl ThreadsApp {
             self.adapter.draft.detection_request(cx)
         };
         let generation = self.adapter.draft.generation;
-        self.adapter.draft.resolving = true;
-        self.adapter.draft.error = None;
+        self.adapter.draft.begin_resolution();
         cx.notify();
         let url = self.adapter_url("/api/build/resolve");
         spawn_session_task(cx, async move |mut host| {
@@ -1115,7 +1149,7 @@ impl ThreadsApp {
                         }
                         Err(error) => {
                             app.adapter.draft.resolved = None;
-                            app.adapter.draft.error = Some(error);
+                            app.adapter.draft.preparation_error = Some(error);
                         }
                     }
                 }

@@ -73,7 +73,7 @@ impl ThreadsApp {
         self.adapter.draft.picker_revision = self.adapter.draft.picker_revision.wrapping_add(1);
         let revision = self.adapter.draft.picker_revision;
         self.adapter.draft.picker = Some(kind);
-        self.adapter.draft.error = None;
+        self.adapter.draft.preparation_error = None;
         cx.notify();
         let url = self.adapter_url("/api/files/choose");
         spawn_session_task(cx, async move |mut host| {
@@ -118,7 +118,7 @@ impl ThreadsApp {
                             app.session_draft_changed(window, cx);
                         }
                         Ok(FileChoice { path: None }) => {}
-                        Err(error) => app.adapter.draft.error = Some(error),
+                        Err(error) => app.adapter.draft.preparation_error = Some(error),
                     }
                     let focus = app.adapter.draft.path_input(kind).read(cx).focus_handle(cx);
                     focus.focus(window, cx);
