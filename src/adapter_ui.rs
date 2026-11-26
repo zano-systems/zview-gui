@@ -91,7 +91,6 @@ struct AcquisitionWarningNotification;
 struct CommandAttempt {
     path: &'static str,
     revision: u64,
-    form_generation: Option<u64>,
 }
 
 pub(super) struct Controls {
@@ -483,11 +482,11 @@ impl ThreadsApp {
         {
             self.adapter.command_failure = None;
         }
-        CommandAttempt {
-            path,
-            revision: self.adapter.command_revision,
-            form_generation,
-        }
+        let revision = self.adapter.command_revision;
+        self.adapter
+            .draft
+            .begin_submission(form_generation, revision);
+        CommandAttempt { path, revision }
     }
 
     fn adapter_command(
@@ -531,24 +530,22 @@ impl ThreadsApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.adapter.command_revision != attempt.revision {
+        // The form owns its submission even if a replacement snapshot let a
+        // different session command start before this acknowledgement arrived.
+        let submitted_form = self
+            .adapter
+            .draft
+            .complete_submission(attempt.revision, result.as_ref().err().map(String::as_str));
+        let pending = self.adapter.command_revision == attempt.revision
+            && std::mem::take(&mut self.adapter.state.pending);
+        if !submitted_form && !pending {
             return;
         }
-        let pending = std::mem::take(&mut self.adapter.state.pending);
-        let submitted_form = attempt.form_generation.is_some()
-            && attempt.form_generation == self.adapter.draft.open_generation();
         match result {
-            Err(error) if pending || submitted_form => {
-                // A replacement snapshot ends session ownership, but the
-                // submitting form still needs the result of its own request.
-                if submitted_form {
-                    self.adapter.draft.error = Some(error.clone());
-                }
-                if pending {
-                    self.adapter.command_failure = Some((attempt.path, error));
-                    if attempt.path == "/api/session/usage-window" {
-                        self.adapter.usage.restore(window, cx);
-                    }
+            Err(error) if pending => {
+                self.adapter.command_failure = Some((attempt.path, error));
+                if attempt.path == "/api/session/usage-window" {
+                    self.adapter.usage.restore(window, cx);
                 }
             }
             Ok(()) if submitted_form => {
@@ -557,7 +554,6 @@ impl ThreadsApp {
                 self.adapter.draft.dismiss();
                 window.close_dialog(cx);
             }
-            _ if !pending => return,
             _ => {}
         }
         cx.notify();
@@ -898,7 +894,7 @@ pub fn adapter_state() -> Result<String, JsValue> {
             "context": adapter.state.session.as_ref().and_then(|s| s.context.clone()),
             "dialog_open": adapter.draft.open,
             "draft_mode": adapter.draft.mode,
-            "draft_error": adapter.draft.error,
+            "draft_error": adapter.draft.displayed_error(),
             "build_context": adapter.draft.context(cx),
             "draft_request": adapter.draft.open.then(|| adapter.draft.request(cx)),
             "draft_recording": adapter.draft.recording_path(cx),

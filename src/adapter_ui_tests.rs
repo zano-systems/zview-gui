@@ -85,7 +85,7 @@ fn command_error_survives_health_and_is_scoped_to_the_confirmed_session(cx: &mut
             .unwrap();
             app.accept_adapter(health, window, cx).unwrap();
             assert_eq!(app.adapter_command_error(), Some("Averaging rejected"));
-            assert!(app.adapter.draft.error.is_none());
+            assert!(app.adapter.draft.displayed_error().is_none());
         });
         window.draw(cx).clear(cx);
     });
@@ -147,7 +147,7 @@ fn submitting_form_gets_the_rejection_in_either_snapshot_order(cx: &mut TestAppC
                 }
                 assert!(app.adapter.draft.open);
                 assert_eq!(
-                    app.adapter.draft.error.as_deref(),
+                    app.adapter.draft.displayed_error(),
                     Some("Stop the current session first."),
                     "snapshot first: {snapshot_first}",
                 );
@@ -155,6 +155,79 @@ fn submitting_form_gets_the_rejection_in_either_snapshot_order(cx: &mut TestAppC
             });
         });
     }
+}
+
+#[gpui_kit::test]
+fn form_completion_does_not_consume_a_newer_stop_command(cx: &mut TestAppContext) {
+    for result in [Err("Competing Connect".into()), Ok(())] {
+        let (app, mut cx) = crate::tests::setup(cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_session_dialog(window, cx);
+                let owner = app.adapter.draft.open_generation();
+                let connect = app.begin_adapter_command("/api/session/live", owner);
+                let snapshot = serde_json::from_value(json!({
+                    "version": crate::adapter_protocol::PROTOCOL_VERSION,
+                    "type": "snapshot", "sequence": 0, "session_id": "winner",
+                    "data": {
+                        "id": "winner", "elf": "zephyr.elf", "status": "reading",
+                        "frames_received": 0,
+                        "source": {"mode": "live", "configuration": {"build_dir": "build"}, "runner": "jlink"},
+                        "last_frame": null, "last_notice": null, "error": null
+                    }
+                }))
+                .unwrap();
+                app.accept_adapter(snapshot, window, cx).unwrap();
+                assert!(!app.adapter.state.pending);
+                let stop = app.begin_adapter_command("/api/session/stop", None);
+                let expected_error = result.as_ref().err().map(String::as_str);
+                app.finish_adapter_command(connect, result.clone(), window, cx);
+                assert_eq!(app.adapter.draft.open, expected_error.is_some());
+                assert_eq!(app.adapter.draft.displayed_error(), expected_error);
+                assert!(app.adapter.state.pending);
+                assert!(app.adapter_command_error().is_none());
+                app.finish_adapter_command(stop, Ok(()), window, cx);
+                assert!(!app.adapter.state.pending);
+            });
+        });
+    }
+}
+
+#[gpui_kit::test]
+fn build_resolution_does_not_clear_a_submission_rejection(cx: &mut TestAppContext) {
+    let (app, mut cx) = crate::tests::setup(cx);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_session_dialog(window, cx);
+            app.adapter.draft.mode = crate::adapter_protocol::Mode::Live;
+            let owner = app.adapter.draft.open_generation();
+            let attempt = app.begin_adapter_command("/api/session/live", owner);
+            app.finish_adapter_command(attempt, Err("Connect rejected".into()), window, cx);
+            assert_eq!(
+                app.adapter.draft.displayed_error(),
+                Some("Connect rejected")
+            );
+            // Exercise the transition used when the debounce expires without
+            // starting an HTTP request on the deterministic GPUI executor.
+            app.adapter.draft.preparation_error = Some("Previous detection error".into());
+            app.adapter.draft.begin_resolution();
+            assert!(app.adapter.draft.preparation_error.is_none());
+            assert_eq!(
+                app.adapter.draft.displayed_error(),
+                Some("Connect rejected")
+            );
+        });
+        window.draw(cx).clear(cx);
+    });
+    assert!(cx.debug_bounds("session-submission-error").is_some());
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            let owner = app.adapter.draft.open_generation();
+            let retry = app.begin_adapter_command("/api/session/live", owner);
+            assert!(app.adapter.draft.displayed_error().is_none());
+            app.finish_adapter_command(retry, Ok(()), window, cx);
+        });
+    });
 }
 
 #[gpui_kit::test]
@@ -166,13 +239,13 @@ fn non_form_open_completions_leave_an_open_draft_untouched(cx: &mut TestAppConte
                 app.open_session_dialog(window, cx);
                 let draft = app.adapter.draft.request(cx);
                 let generation = app.adapter.draft.open_generation();
-                app.adapter.draft.error = Some("Existing form error".into());
+                app.adapter.draft.preparation_error = Some("Existing form error".into());
                 let attempt = app.begin_adapter_command("/api/session/replay", None);
                 app.finish_adapter_command(attempt, result, window, cx);
                 assert_eq!(app.adapter.draft.open_generation(), generation);
                 assert_eq!(app.adapter.draft.request(cx), draft);
                 assert_eq!(
-                    app.adapter.draft.error.as_deref(),
+                    app.adapter.draft.displayed_error(),
                     Some("Existing form error")
                 );
             });
